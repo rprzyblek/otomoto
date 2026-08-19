@@ -17,7 +17,7 @@ st.set_page_config(
 DB_NAME = "price_tracker.db"
 
 def init_db():
-    """Inicjalizacja tabeli w bazie danych jeśli nie istnieje."""
+    """Inicjalizacja tabeli oraz automatyczna migracja starej bazy danych."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -30,6 +30,13 @@ def init_db():
             image_url TEXT
         )
     ''')
+    
+    # Migracja: dodanie kolumny title dla bazy utworzonej we wcześniejszej wersji
+    try:
+        c.execute("ALTER TABLE price_history ADD COLUMN title TEXT")
+    except sqlite3.OperationalError:
+        pass  # Kolumna już istnieje w bazie
+
     conn.commit()
     conn.close()
 
@@ -64,7 +71,8 @@ def get_tracked_summary():
         first_entry = group.iloc[0]
         latest_entry = group.iloc[-1]
 
-        title = latest_entry['title'] or "Ogłoszenie Otomoto"
+        # Obsługa wartości None/NaN dla starych wpisów
+        title = latest_entry['title'] if pd.notna(latest_entry['title']) and latest_entry['title'] else "Ogłoszenie Otomoto"
         current_price = latest_entry['price']
         first_price = first_entry['price']
         diff = current_price - first_price
@@ -79,10 +87,10 @@ def get_tracked_summary():
             'last_updated': latest_entry['timestamp']
         })
 
-    # Sortowanie od najnowszych
     summary.reverse()
     return summary
 
+# Uruchomienie inicjalizacji bazy i migracji
 init_db()
 
 # --- SCRAPER ---
@@ -109,7 +117,6 @@ def sprawdz_i_pobierz_otomoto(url):
         if "Ogłoszenie jest nieaktualne" in html or "To ogłoszenie nie jest już dostępne" in html:
             return None, None, False, None
 
-        # 1. Wyciąganie JSON z __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -126,7 +133,6 @@ def sprawdz_i_pobierz_otomoto(url):
 
                 return title, cena, True, url_zdjecia
 
-        # 2. Rezerwowy zapis z metatagów
         title_match = re.search(r'<meta property="og:title" content="(.*?)"', html)
         title_alt = title_match.group(1) if title_match else "Ogłoszenie Otomoto"
 
@@ -148,7 +154,7 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None
 
-# --- STYLIZACJA CSS (Podgląd zdjęcia po najechaniu myszką) ---
+# --- STYLIZACJA CSS ---
 st.markdown("""
 <style>
 .offer-row {
@@ -222,7 +228,6 @@ st.markdown("""
     font-size: 14px;
 }
 
-/* Tooltip / Popup ze zdjęciem auta */
 .hover-preview {
     display: none;
     position: absolute;
@@ -281,7 +286,6 @@ if not summary_list:
     st.info("Brak śledzonych ofert. Wklej link powyżej, aby dodać pierwsze auto.")
 else:
     for item in summary_list:
-        # Formatowanie zmiany ceny (+/-)
         diff = item['diff']
         if diff < 0:
             delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
