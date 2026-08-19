@@ -1,93 +1,123 @@
-import re
 import json
-import urllib.request
-from playwright.sync_api import sync_playwright
+import re
+import requests
+import streamlit as st
+
+# Config strony Streamlit
+st.set_page_config(
+    page_title="Otomoto Price Tracker", page_icon="🚗", layout="centered"
+)
+
 
 def sprawdz_i_pobierz_otomoto(url):
+    """Szybki i lekki scraper Otomoto pod Streamlit Cloud (bez Playwright).
+
+    Wyciąga dane bezpośrednio z JSON __NEXT_DATA__. Zwraca: (cena, czy_aktywne,
+    url_zdjecia)
     """
-    Optymalizowany pod serwery chmurowe scraper Otomoto.
-    Zwraca: (cena, czy_aktywne, url_zdjecia)
-    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "pl,en-US;q=0.7,en;q=0.3",
+        "Cache-Control": "no-cache",
+    }
+
     try:
-        with sync_playwright() as p:
-            # Flagi wymagane na serwerach chmurowych (Linux/Docker) do ominięcia Cloudflare
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars"
-                ]
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code in [403, 404, 410]:
+            return None, False, None
+
+        html = response.text
+
+        # Sprawdzenie nieaktywności ogłoszenia
+        if (
+            "Ogłoszenie jest nieaktualne" in html
+            or "To ogłoszenie nie jest już dostępne" in html
+        ):
+            return None, False, None
+
+        # Wyciąganie JSON z __NEXT_DATA__
+        match = re.search(
+            r'<script id="__NEXT_DATA__"'
+            r' type="application/json">(.*?)</script>',
+            html,
+        )
+        if match:
+            json_data = json.loads(match.group(1))
+            ad_data = (
+                json_data.get("props", {})
+                .get("pageProps", {})
+                .get("ad", {})
             )
-            
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                locale="pl-PL",
-                viewport={"width": 1920, "height": 1080}
-            )
-            
-            # Maskowanie faktu, że to automatyzacja (ukrycie webdrivera)
-            page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            response = page.goto(url, wait_until="domcontentloaded", timeout=40000)
-            
-            if response is None or response.status in [403, 404, 410]:
-                browser.close()
-                return None, False, None
-                
-            page.wait_for_timeout(3000)
-            html_content = page.content()
-            
-            # Sprawdzenie nieaktywności
-            if "Ogłoszenie jest nieaktualne" in html_content or "To ogłoszenie nie jest już dostępne" in html_content:
-                browser.close()
-                return None, False, None
 
-            cena = None
-            url_zdjecia = None
+            if ad_data:
+                cena = float(ad_data["price"]["value"])
+                photos = ad_data.get("photos", [])
+                url_zdjecia = None
 
-            # 1. Odczyt ceny z tagu __NEXT_DATA__ (najbardziej odporne na serwerach)
-            try:
-                next_data = page.locator('script#__NEXT_DATA__')
-                if next_data.count() > 0:
-                    json_raw = next_data.inner_text()
-                    data = json.loads(json_raw)
-                    ad_data = data['props']['pageProps']['ad']
-                    cena = float(ad_data['price']['value'])
-                    
-                    photos = ad_data.get('photos', [])
-                    if photos:
-                        url_zdjecia = photos[0].get('url') or photos[0].get('medium')
-            except Exception:
-                pass
+                if photos:
+                    url_zdjecia = photos[0].get("url") or photos[0].get(
+                        "medium"
+                    )
 
-            # 2. Rezerwowe pobieranie ceny z tytułu strony lub nagłówków
-            if cena is None:
-                title_text = page.title()
-                match = re.search(r'(\d[\d\s]+)\s*PLN', title_text)
-                if match:
-                    clean = ''.join(re.findall(r'\d+', match.group(1)))
-                    if clean:
-                        cena = float(clean)
-
-            # 3. Rezerwowe pobieranie zdjęcia z OpenGraph
-            if not url_zdjecia:
-                try:
-                    og_image = page.locator('meta[property="og:image"]')
-                    if og_image.count() > 0:
-                        url_zdjecia = og_image.first.get_attribute("content")
-                except Exception:
-                    pass
-
-            browser.close()
-            
-            if cena is not None:
                 return cena, True, url_zdjecia
 
+        # Rezerwowy zapis z OpenGraph / Title
+        title_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
+        cena_alt = None
+        if title_match:
+            clean = "".join(re.findall(r"\d+", title_match.group(1)))
+            if clean:
+                cena_alt = float(clean)
+
+        og_image_match = re.search(
+            r'<meta property="og:image" content="(.*?)"', html
+        )
+        url_zdjecia_alt = og_image_match.group(1) if og_image_match else None
+
+        if cena_alt is not None:
+            return cena_alt, True, url_zdjecia_alt
+
     except Exception as e:
-        print(f"Błąd Playwright: {e}")
-        
+        st.error(f"Błąd połączenia: {e}")
+
     return None, False, None
+
+
+# --- INTERFEJS STREAMLIT ---
+st.title("🚗 Śledzenie Cen Otomoto")
+st.write("Wklej link do ogłoszenia, aby sprawdzić aktualną cenę i status.")
+
+url_input = st.text_input(
+    "URL ogłoszenia Otomoto:",
+    placeholder="https://www.otomoto.pl/osobowe/oferta/...",
+)
+
+if st.button("Sprawdź ogłoszenie", type="primary"):
+    if not url_input.strip():
+        st.warning("Proszę podać poprawny URL.")
+    else:
+        with st.spinner("Pobieranie danych z Otomoto..."):
+            cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(url_input)
+
+        if aktywne and cena is not None:
+            st.success("Ogłoszenie jest aktywne!")
+
+            col1, col2 = st.columns([1, 2])
+
+            with col1:
+                if zdjecie:
+                    st.image(zdjecie, use_container_width=True)
+                else:
+                    st.info("Brak zdjęcia")
+
+            with col2:
+                st.metric(label="Aktualna cena", value=f"{cena:,.0f} PLN".replace(",", " "))
+        else:
+            st.error("Ogłoszenie jest nieaktywne, usunięte lub podany link jest nieprawidłowy.")
