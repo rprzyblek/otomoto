@@ -17,7 +17,7 @@ st.set_page_config(
 DB_NAME = "price_tracker.db"
 
 def init_db():
-    """Inicjalizacja tabeli oraz automatyczna migracja starej bazy danych."""
+    """Inicjalizacja tabeli oraz automatyczna migracja bazy danych."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -25,30 +25,44 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             url TEXT NOT NULL,
             title TEXT,
-            price REAL NOT NULL,
+            price REAL,
+            is_active INTEGER DEFAULT 1,
             timestamp DATETIME NOT NULL,
             image_url TEXT
         )
     ''')
     
-    # Migracja: dodanie kolumny title dla bazy utworzonej we wcześniejszej wersji
     try:
         c.execute("ALTER TABLE price_history ADD COLUMN title TEXT")
     except sqlite3.OperationalError:
-        pass  # Kolumna już istnieje w bazie
+        pass
+
+    try:
+        c.execute("ALTER TABLE price_history ADD COLUMN is_active INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
 
-def save_price_entry(url, title, price, image_url):
-    """Zapisuje nowy pomiar ceny do bazy danych."""
+def save_price_entry(url, title, price, is_active, image_url):
+    """Zapisuje nowy pomiar ceny/statusu do bazy danych."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    active_int = 1 if is_active else 0
     c.execute(
-        "INSERT INTO price_history (url, title, price, timestamp, image_url) VALUES (?, ?, ?, ?, ?)",
-        (url, title, price, now, image_url)
+        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url) VALUES (?, ?, ?, ?, ?, ?)",
+        (url, title, price, active_int, now, image_url)
     )
+    conn.commit()
+    conn.close()
+
+def delete_offer(url):
+    """Usuwa całą historię powiązaną z danym URL."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM price_history WHERE url = ?", (url,))
     conn.commit()
     conn.close()
 
@@ -56,7 +70,7 @@ def get_tracked_summary():
     """Pobiera zestawienie wszystkich śledzonych ofert z wyliczeniem różnicy ceny (+/-)."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
-        "SELECT url, title, price, timestamp, image_url FROM price_history ORDER BY timestamp ASC",
+        "SELECT url, title, price, is_active, timestamp, image_url FROM price_history ORDER BY timestamp ASC",
         conn
     )
     conn.close()
@@ -72,15 +86,22 @@ def get_tracked_summary():
         latest_entry = group.iloc[-1]
 
         title = latest_entry['title'] if pd.notna(latest_entry['title']) and latest_entry['title'] else "Ogłoszenie Otomoto"
+        is_active = bool(latest_entry['is_active']) if pd.notna(latest_entry['is_active']) else True
+        
         current_price = latest_entry['price']
         first_price = first_entry['price']
-        diff = current_price - first_price
+        
+        diff = 0
+        if current_price is not None and first_price is not None:
+            diff = current_price - first_price
+
         image_url = latest_entry['image_url']
 
         summary.append({
             'url': url,
             'title': title,
             'current_price': current_price,
+            'is_active': is_active,
             'diff': diff,
             'image_url': image_url,
             'last_updated': latest_entry['timestamp']
@@ -134,7 +155,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if photos:
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
-        # 2. Pobieranie tytułu z tagu <h1> z klasą offer-title
+        # 2. Pobieranie tytułu z tagu <h1>
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -183,7 +204,6 @@ st.markdown("""
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    margin-bottom: 10px;
     background-color: #1e2129;
     border: 1px solid #2d313e;
     border-radius: 8px;
@@ -198,6 +218,7 @@ st.markdown("""
     display: flex;
     flex-direction: column;
     gap: 4px;
+    max-width: 60%;
 }
 
 .offer-title {
@@ -207,45 +228,58 @@ st.markdown("""
     text-decoration: none;
 }
 
+.offer-title.inactive {
+    text-decoration: line-through;
+    color: #9ca3af;
+}
+
 .offer-title:hover {
     color: #ff4b4b;
-    text-decoration: underline;
 }
 
 .offer-price-box {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
 }
 
 .current-price {
     font-weight: bold;
-    font-size: 16px;
+    font-size: 15px;
     color: #ffffff;
 }
 
 .price-delta-green {
     color: #22c55e;
     font-weight: bold;
-    font-size: 14px;
+    font-size: 13px;
     background: rgba(34, 197, 94, 0.1);
-    padding: 2px 8px;
+    padding: 2px 6px;
     border-radius: 4px;
 }
 
 .price-delta-red {
     color: #ef4444;
     font-weight: bold;
-    font-size: 14px;
+    font-size: 13px;
     background: rgba(239, 68, 68, 0.1);
-    padding: 2px 8px;
+    padding: 2px 6px;
     border-radius: 4px;
 }
 
 .price-delta-neutral {
     color: #9ca3af;
     font-weight: normal;
-    font-size: 14px;
+    font-size: 13px;
+}
+
+.status-badge-expired {
+    color: #ef4444;
+    font-weight: bold;
+    font-size: 12px;
+    background: rgba(239, 68, 68, 0.15);
+    padding: 2px 8px;
+    border-radius: 4px;
 }
 
 .hover-preview {
@@ -283,7 +317,7 @@ url_input = st.text_input(
     placeholder="https://www.otomoto.pl/osobowe/oferta/...",
 )
 
-if st.button("Sprawdź i dodaj/zaktualizuj", type="primary"):
+if st.button("Sprawdź i dodaj", type="primary"):
     if not url_input.strip():
         st.warning("Proszę podać poprawny URL.")
     else:
@@ -291,14 +325,39 @@ if st.button("Sprawdź i dodaj/zaktualizuj", type="primary"):
             nazwa, cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(url_input)
 
         if aktywne and cena is not None:
-            save_price_entry(url_input, nazwa, cena, zdjecie)
+            save_price_entry(url_input, nazwa, cena, True, zdjecie)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
             st.rerun()
         else:
-            st.error("Ogłoszenie jest nieaktywne, usunięte lub podany link jest nieprawidłowy.")
+            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie)
+            st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
+            st.rerun()
 
 st.divider()
-st.subheader("📋 Śledzone oferty")
+
+# Nagłówek i przycisk Odśwież Wszystko
+col_head1, col_head2 = st.columns([2, 1])
+with col_head1:
+    st.subheader("📋 Śledzone oferty")
+with col_head2:
+    if st.button("🔄 Odśwież wszystkie", use_container_width=True):
+        summary_to_refresh = get_tracked_summary()
+        if summary_to_refresh:
+            progress_bar = st.progress(0)
+            total = len(summary_to_refresh)
+            
+            for index, item in enumerate(summary_to_refresh):
+                nazwa, cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(item['url'])
+                
+                # Jeśli scraper nie wyciągnął nazwy/zdjęcia, zachowujemy stare z bazy
+                title_to_save = nazwa if nazwa else item['title']
+                img_to_save = zdjecie if zdjecie else item['image_url']
+                
+                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save)
+                progress_bar.progress((index + 1) / total)
+
+            st.success("Zaktualizowano wszystkie oferty!")
+            st.rerun()
 
 summary_list = get_tracked_summary()
 
@@ -306,34 +365,50 @@ if not summary_list:
     st.info("Brak śledzonych ofert. Wklej link powyżej, aby dodać pierwsze auto.")
 else:
     for item in summary_list:
-        diff = item['diff']
-        if diff < 0:
-            delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
-        elif diff > 0:
-            delta_html = f'<span class="price-delta-red">+{diff:,.0f} PLN</span>'.replace(",", " ")
-        else:
-            delta_html = '<span class="price-delta-neutral">0 PLN</span>'
+        col_item, col_delete = st.columns([12, 1])
 
-        img_preview_html = ""
-        if item['image_url']:
-            img_preview_html = f'''
-            <div class="hover-preview">
-                <img src="{item['image_url']}" alt="Zdjęcie podglądowe" />
-            </div>
-            '''
+        with col_item:
+            if not item['is_active']:
+                title_class = "offer-title inactive"
+                price_html = '<span class="status-badge-expired">Niedostępne / Wygaśnięte</span>'
+                delta_html = ""
+            else:
+                title_class = "offer-title"
+                price_html = f'<span class="current-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
+                
+                diff = item['diff']
+                if diff < 0:
+                    delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
+                elif diff > 0:
+                    delta_html = f'<span class="price-delta-red">+{diff:,.0f} PLN</span>'.replace(",", " ")
+                else:
+                    delta_html = '<span class="price-delta-neutral">0 PLN</span>'
 
-        st.markdown(
-            f'''
-            <div class="offer-row">
-                <div class="offer-info">
-                    <a href="{item['url']}" target="_blank" class="offer-title">{item['title']}</a>
+            img_preview_html = ""
+            if item['image_url']:
+                img_preview_html = f'''
+                <div class="hover-preview">
+                    <img src="{item['image_url']}" alt="Zdjęcie podglądowe" />
                 </div>
-                <div class="offer-price-box">
-                    <span class="current-price">{item['current_price']:,.0f} PLN</span>
-                    {delta_html}
+                '''
+
+            st.markdown(
+                f'''
+                <div class="offer-row">
+                    <div class="offer-info">
+                        <a href="{item['url']}" target="_blank" class="{title_class}">{item['title']}</a>
+                    </div>
+                    <div class="offer-price-box">
+                        {price_html}
+                        {delta_html}
+                    </div>
+                    {img_preview_html}
                 </div>
-                {img_preview_html}
-            </div>
-            '''.replace(",", " "),
-            unsafe_allow_html=True
-        )
+                ''',
+                unsafe_allow_html=True
+            )
+
+        with col_delete:
+            if st.button("🗑️", key=f"del_{item['url']}", help="Usuń ofertę z listy"):
+                delete_offer(item['url'])
+                st.rerun()
