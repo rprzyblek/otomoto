@@ -37,12 +37,13 @@ def init_db():
             is_active INTEGER DEFAULT 1,
             timestamp DATETIME NOT NULL,
             image_url TEXT,
-            published_at TEXT
+            published_at TEXT,
+            location TEXT
         )
     ''')
     
     # Bezpieczne dodawanie nowych kolumn w przypadku starszych wersji bazy
-    for col in ["title TEXT", "is_active INTEGER DEFAULT 1", "published_at TEXT"]:
+    for col in ["title TEXT", "is_active INTEGER DEFAULT 1", "published_at TEXT", "location TEXT"]:
         try:
             c.execute(f"ALTER TABLE price_history ADD COLUMN {col}")
         except sqlite3.OperationalError:
@@ -51,8 +52,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_price_entry(url, title, price, is_active, image_url, published_at):
-    """Zapisuje nowy pomiar ceny/statusu z obsługą wartości NULL/None dla wygasłych ofert."""
+def save_price_entry(url, title, price, is_active, image_url, published_at, location):
+    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -60,8 +61,8 @@ def save_price_entry(url, title, price, is_active, image_url, published_at):
     price_to_save = float(price) if price is not None else None
 
     c.execute(
-        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (url, title, price_to_save, active_int, now, image_url, published_at)
+        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (url, title, price_to_save, active_int, now, image_url, published_at, location)
     )
     conn.commit()
     conn.close()
@@ -97,11 +98,21 @@ def extract_brand(title):
     parts = title.strip().split()
     return parts[0].capitalize() if parts else "Inne"
 
+def clean_location(raw_loc):
+    """Oczyszcza napis z adresu, wyciągając Miasto, Województwo."""
+    if not raw_loc:
+        return None
+    # Usunięcie kodu pocztowego i dokładnej ulicy jeśli istnieją
+    loc = re.sub(r'^\d{2}-\d{3}\s*', '', raw_loc)
+    loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc) # np. Połczyńska 32 - 01-377
+    loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE) # Usunięcie (Polska)
+    return loc.strip()
+
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert z wyliczeniem różnicy cenowej i czasu na rynku."""
+    """Pobiera zestawienie śledzonych ofert z lokalizacją."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
-        "SELECT url, title, price, is_active, timestamp, image_url, published_at FROM price_history ORDER BY timestamp ASC",
+        "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
         conn
     )
     conn.close()
@@ -129,6 +140,7 @@ def get_tracked_summary():
 
         image_url = latest_entry['image_url']
         published_at_str = latest_entry['published_at'] or first_entry['published_at']
+        location_str = latest_entry['location'] if pd.notna(latest_entry['location']) else first_entry['location']
 
         pub_dt = parse_publication_date(published_at_str)
         if pub_dt:
@@ -147,6 +159,7 @@ def get_tracked_summary():
             'image_url': image_url,
             'days_on_market': days_on_market,
             'published_at': published_at_str,
+            'location': location_str,
             'last_updated': latest_entry['timestamp']
         })
 
@@ -156,7 +169,7 @@ init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera nazwę, cenę, zdjęcie oraz dokładną datę wystawienia ogłoszenia z Otomoto."""
+    """Pobiera nazwę, cenę, zdjęcie, datę oraz lokalizację z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -171,18 +184,20 @@ def sprawdz_i_pobierz_otomoto(url):
         response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code in [403, 404, 410]:
-            return None, None, False, None, None
+            return None, None, False, None, None, None
 
         html = response.text
 
         if "Ogłoszenie jest nieaktualne" in html or "To ogłoszenie nie jest już dostępne" in html:
-            return None, None, False, None, None
+            return None, None, False, None, None, None
 
         title = None
         cena = None
         url_zdjecia = None
         published_at = None
+        location = None
 
+        # 1. JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -198,7 +213,29 @@ def sprawdz_i_pobierz_otomoto(url):
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
                 published_at = ad_data.get("createdTime") or ad_data.get("createdAt")
+                
+                # Pobieranie lokalizacji z JSON
+                loc_data = ad_data.get("location", {})
+                if loc_data:
+                    city = loc_data.get("city", {}).get("name", "")
+                    region = loc_data.get("region", {}).get("name", "")
+                    if city and region:
+                        location = f"{city}, {region}"
+                    elif city:
+                        location = city
 
+        # 2. Pobieranie lokalizacji z tagu HTML (pod wskazaną klasę ooa-889rdv)
+        if not location:
+            loc_match = re.search(
+                r'<p[^>]*class="[^"]*ooa-889rdv[^"]*"[^>]*>(.*?)</p>',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            if loc_match:
+                raw_html_loc = loc_match.group(1)
+                cleaned_text = re.sub(r'<[^>]+>', '', raw_html_loc).strip() # usunięcie <svg>
+                location = clean_location(cleaned_text)
+
+        # 3. Pobieranie daty opublikowania
         if not published_at:
             date_match = re.search(
                 r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
@@ -207,6 +244,7 @@ def sprawdz_i_pobierz_otomoto(url):
             if date_match:
                 published_at = date_match.group(1).strip()
 
+        # 4. Pobieranie tytułu z <h1>
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -216,6 +254,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
+        # 5. Pobieranie ceny rezerwowo
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -223,6 +262,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
+        # 6. Pobieranie zdjęcia rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -231,12 +271,12 @@ def sprawdz_i_pobierz_otomoto(url):
         final_title = title if title else "Ogłoszenie Otomoto"
 
         if cena is not None:
-            return final_title, cena, True, url_zdjecia, published_at
+            return final_title, cena, True, url_zdjecia, published_at, location
 
     except Exception as e:
         st.error(f"Błąd połączenia: {e}")
 
-    return None, None, False, None, None
+    return None, None, False, None, None, None
 
 # --- STYLIZACJA CSS ---
 st.markdown("""
@@ -382,15 +422,15 @@ if st.button("Sprawdź i dodaj", type="primary"):
         st.warning("Proszę podać poprawny URL.")
     else:
         with st.spinner("Pobieranie danych z Otomoto..."):
-            nazwa, cena, aktywne, zdjecie, data_wystawienia = sprawdz_i_pobierz_otomoto(url_input)
+            nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja = sprawdz_i_pobierz_otomoto(url_input)
 
         if aktywne and cena is not None:
-            save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia)
+            save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia, lokalizacja)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
             st.session_state.url_input_key = ""
             st.rerun()
         else:
-            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia)
+            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia, lokalizacja)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
             st.session_state.url_input_key = ""
             st.rerun()
@@ -408,13 +448,14 @@ with col_head2:
             total = len(summary_to_refresh)
             
             for index, item in enumerate(summary_to_refresh):
-                nazwa, cena, aktywne, zdjecie, data_wystawienia = sprawdz_i_pobierz_otomoto(item['url'])
+                nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja = sprawdz_i_pobierz_otomoto(item['url'])
                 
                 title_to_save = nazwa if nazwa else item['title']
                 img_to_save = zdjecie if zdjecie else item['image_url']
                 pub_to_save = data_wystawienia if data_wystawienia else item['published_at']
+                loc_to_save = lokalizacja if lokalizacja else item['location']
                 
-                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save, pub_to_save)
+                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save, pub_to_save, loc_to_save)
                 progress_bar.progress((index + 1) / total)
 
             st.success("Zaktualizowano wszystkie oferty!")
@@ -487,6 +528,9 @@ else:
             else:
                 time_str = f"⏱️ {days} dni na rynku"
 
+            loc_str = f" • 📍 {item['location']}" if item['location'] else ""
+            sub_info_str = f"{time_str}{loc_str}"
+
             if item['is_active'] is False:
                 title_class = "offer-title inactive"
                 price_html = '<span class="status-badge-expired">Niedostępne / Wygaśnięte</span>'
@@ -516,7 +560,7 @@ else:
                 <div class="offer-row">
                     <div class="offer-info">
                         <a href="{item['url']}" target="_blank" class="{title_class}">{item['title']}</a>
-                        <span class="market-time-badge">{time_str}</span>
+                        <span class="market-time-badge">{sub_info_str}</span>
                     </div>
                     <div class="offer-price-box">
                         {price_html}
