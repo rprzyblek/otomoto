@@ -365,9 +365,14 @@ st.markdown("""
 # --- INTERFEJS STREAMLIT ---
 st.title("🚗 Śledzenie Cen Otomoto")
 
+# Inicjalizacja klucza pola tekstowego w session_state
+if "url_input_key" not in st.session_state:
+    st.session_state.url_input_key = ""
+
 url_input = st.text_input(
     "Dodaj nowe ogłoszenie do śledzenia:",
-    placeholder="https://www.otomoto.pl/osobowe/oferta/...",
+    placeholder="tutaj wklej link z otomoto",
+    key="url_input_key"
 )
 
 if st.button("Sprawdź i dodaj", type="primary"):
@@ -380,10 +385,12 @@ if st.button("Sprawdź i dodaj", type="primary"):
         if aktywne and cena is not None:
             save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
+            st.session_state.url_input_key = ""  # Czyszczenie pola
             st.rerun()
         else:
             save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
+            st.session_state.url_input_key = ""  # Czyszczenie pola
             st.rerun()
 
 st.divider()
@@ -424,22 +431,18 @@ else:
 
     available_brands = sorted(list(set(item['brand'] for item in summary_list)))
     
-    # Tworzymy rządek z przyciskami filtrów
     brand_cols = st.columns(len(available_brands) + 1)
     
-    # Przycisk "Wszystkie"
     with brand_cols[0]:
         btn_type = "primary" if st.session_state.selected_brand is None else "secondary"
         if st.button("Wszystkie", type=btn_type, use_container_width=True):
             st.session_state.selected_brand = None
             st.rerun()
 
-    # Przyciski poszczególnych marek
     for idx, brand in enumerate(available_brands):
         with brand_cols[idx + 1]:
             btn_type = "primary" if st.session_state.selected_brand == brand else "secondary"
             if st.button(brand, type=btn_type, use_container_width=True):
-                # Kliknięcie aktywnej marki odznacza filtr
                 if st.session_state.selected_brand == brand:
                     st.session_state.selected_brand = None
                 else:
@@ -457,12 +460,10 @@ else:
         ]
     )
 
-    # Aplikowanie filtra marki
     filtered_list = summary_list
     if st.session_state.selected_brand:
         filtered_list = [item for item in summary_list if item['brand'] == st.session_state.selected_brand]
 
-    # Aplikowanie sortowania
     if sort_option == "Najnowsze na rynku":
         filtered_list.sort(key=lambda x: x['days_on_market'])
     elif sort_option == "Cena: Od najtańszych":
@@ -474,7 +475,6 @@ else:
 
     st.write("")
 
-    # Renderowanie listy
     for item in filtered_list:
         col_item, col_delete = st.columns([12, 1])
 
