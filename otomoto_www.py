@@ -42,7 +42,6 @@ def init_db():
         )
     ''')
     
-    # Bezpieczne dodawanie nowych kolumn w przypadku starszych wersji bazy
     for col in ["title TEXT", "is_active INTEGER DEFAULT 1", "published_at TEXT", "location TEXT"]:
         try:
             c.execute(f"ALTER TABLE price_history ADD COLUMN {col}")
@@ -53,7 +52,7 @@ def init_db():
     conn.close()
 
 def save_price_entry(url, title, price, is_active, image_url, published_at, location):
-    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację."""
+    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację z obsługą braku ceny (None)."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -99,17 +98,16 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def clean_location(raw_loc):
-    """Oczyszcza napis z adresu, wyciągając Miasto, Województwo."""
-    if not raw_loc:
+    """Oczyszcza napis z adresu, wyciągając Miasto, Województwo z wykluczeniem śmieci."""
+    if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
-    # Usunięcie kodu pocztowego i dokładnej ulicy jeśli istnieją
     loc = re.sub(r'^\d{2}-\d{3}\s*', '', raw_loc)
-    loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc) # np. Połczyńska 32 - 01-377
-    loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE) # Usunięcie (Polska)
-    return loc.strip()
+    loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc)
+    loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE)
+    return loc.strip() if loc.strip() else None
 
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert z lokalizacją."""
+    """Pobiera zestawienie śledzonych ofert."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
         "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
@@ -169,7 +167,7 @@ init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera nazwę, cenę, zdjęcie, datę oraz lokalizację z Otomoto."""
+    """Pobiera nazwę, cenę, zdjęcie, datę oraz dokładną lokalizację z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -214,7 +212,6 @@ def sprawdz_i_pobierz_otomoto(url):
 
                 published_at = ad_data.get("createdTime") or ad_data.get("createdAt")
                 
-                # Pobieranie lokalizacji z JSON
                 loc_data = ad_data.get("location", {})
                 if loc_data:
                     city = loc_data.get("city", {}).get("name", "")
@@ -224,16 +221,19 @@ def sprawdz_i_pobierz_otomoto(url):
                     elif city:
                         location = city
 
-        # 2. Pobieranie lokalizacji z tagu HTML (pod wskazaną klasę ooa-889rdv)
+        # 2. Rezerwowe pobieranie lokalizacji z HTML z filtrowaniem śmieci
         if not location:
-            loc_match = re.search(
+            loc_matches = re.findall(
                 r'<p[^>]*class="[^"]*ooa-889rdv[^"]*"[^>]*>(.*?)</p>',
                 html, re.DOTALL | re.IGNORECASE
             )
-            if loc_match:
-                raw_html_loc = loc_match.group(1)
-                cleaned_text = re.sub(r'<[^>]+>', '', raw_html_loc).strip() # usunięcie <svg>
-                location = clean_location(cleaned_text)
+            for loc_raw in loc_matches:
+                cleaned_text = re.sub(r'<[^>]+>', '', loc_raw).strip()
+                if "Zobacz więcej" not in cleaned_text and "oferty" not in cleaned_text.lower():
+                    cand_loc = clean_location(cleaned_text)
+                    if cand_loc:
+                        location = cand_loc
+                        break
 
         # 3. Pobieranie daty opublikowania
         if not published_at:
