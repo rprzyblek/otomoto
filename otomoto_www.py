@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime
@@ -24,7 +25,7 @@ MONTHS_PL = {
 DB_NAME = "price_tracker.db"
 
 def init_db():
-    """Inicjalizacja tabeli oraz migracja dodająca datę opublikowania ogłoszenia."""
+    """Inicjalizacja tabeli oraz migracja bazy danych."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -103,7 +104,7 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert z wyliczeniem czasu na rynku od wystawienia."""
+    """Pobiera zestawienie śledzonych ofert."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
         "SELECT url, title, price, is_active, timestamp, image_url, published_at FROM price_history ORDER BY timestamp ASC",
@@ -161,7 +162,7 @@ init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera nazwę, cenę, zdjęcie oraz dokładną datę wystawienia ogłoszenia z Otomoto."""
+    """Pobiera dane z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -362,10 +363,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- INTERFEJS STREAMLIT ---
-st.title("🚗 Śledzenie Cen Otomoto")
+# --- WYŚWIETLANIE LOGO ---
+col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
+with col_logo2:
+    if os.path.exists("logo.jpg"):
+        st.image("logo.jpg", use_container_width=True)
+    elif os.path.exists("logo.png"):
+        st.image("logo.png", use_container_width=True)
+    else:
+        st.title("🚗 OTOMOTO śledzę ceny")
 
-# Inicjalizacja klucza pola tekstowego w session_state
+# --- INTERFEJS STREAMLIT ---
 if "url_input_key" not in st.session_state:
     st.session_state.url_input_key = ""
 
@@ -385,12 +393,12 @@ if st.button("Sprawdź i dodaj", type="primary"):
         if aktywne and cena is not None:
             save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
-            st.session_state.url_input_key = ""  # Czyszczenie pola
+            st.session_state.url_input_key = ""
             st.rerun()
         else:
             save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
-            st.session_state.url_input_key = ""  # Czyszczenie pola
+            st.session_state.url_input_key = ""
             st.rerun()
 
 st.divider()
@@ -423,7 +431,6 @@ summary_list = get_tracked_summary()
 if not summary_list:
     st.info("Brak śledzonych ofert. Wklej link powyżej, aby dodać pierwsze auto.")
 else:
-    # --- PRZYCISKI MAREK (KLIKALNE TAGI) ---
     st.caption("Filtruj po marce:")
     
     if "selected_brand" not in st.session_state:
@@ -449,7 +456,6 @@ else:
                     st.session_state.selected_brand = brand
                 st.rerun()
 
-    # --- SORTOWANIE ---
     sort_option = st.selectbox(
         "Sortuj według:",
         [
