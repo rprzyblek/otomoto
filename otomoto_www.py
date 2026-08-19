@@ -98,13 +98,23 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def clean_location(raw_loc):
-    """Oczyszcza napis z adresu, wyciągając Miasto, Województwo z wykluczeniem śmieci."""
+    """Oczyszcza napis z adresu, usuwając wstrzyknięte style CSS, ikony i zbędne frazy."""
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
-    loc = re.sub(r'^\d{2}-\d{3}\s*', '', raw_loc)
+    
+    # 1. Usuwanie kodu CSS (np. .ooa-1xwoou1{...})
+    loc = re.sub(r'\.[a-zA-Z0-9_-]+\s*\{[^}]*\}', '', raw_loc)
+    
+    # 2. Usuwanie tagów HTML
+    loc = re.sub(r'<[^>]+>', '', loc)
+    
+    # 3. Usuwanie kodów pocztowych i dopisków ulic
+    loc = re.sub(r'^\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE)
-    return loc.strip() if loc.strip() else None
+    
+    loc = loc.strip()
+    return loc if loc else None
 
 def get_tracked_summary():
     """Pobiera zestawienie śledzonych ofert."""
@@ -217,9 +227,9 @@ def sprawdz_i_pobierz_otomoto(url):
                     city = loc_data.get("city", {}).get("name", "")
                     region = loc_data.get("region", {}).get("name", "")
                     if city and region:
-                        location = f"{city}, {region}"
+                        location = clean_location(f"{city}, {region}")
                     elif city:
-                        location = city
+                        location = clean_location(city)
 
         # 2. Rezerwowe pobieranie lokalizacji z HTML z filtrowaniem śmieci
         if not location:
@@ -228,12 +238,10 @@ def sprawdz_i_pobierz_otomoto(url):
                 html, re.DOTALL | re.IGNORECASE
             )
             for loc_raw in loc_matches:
-                cleaned_text = re.sub(r'<[^>]+>', '', loc_raw).strip()
-                if "Zobacz więcej" not in cleaned_text and "oferty" not in cleaned_text.lower():
-                    cand_loc = clean_location(cleaned_text)
-                    if cand_loc:
-                        location = cand_loc
-                        break
+                cand_loc = clean_location(loc_raw)
+                if cand_loc:
+                    location = cand_loc
+                    break
 
         # 3. Pobieranie daty opublikowania
         if not published_at:
