@@ -135,7 +135,6 @@ def get_tracked_summary():
         image_url = latest_entry['image_url']
         published_at_str = latest_entry['published_at'] or first_entry['published_at']
 
-        # Wyliczenie rzeczywistego czasu na rynku
         pub_dt = parse_publication_date(published_at_str)
         if pub_dt:
             days_on_market = (now_dt - pub_dt).days
@@ -189,7 +188,6 @@ def sprawdz_i_pobierz_otomoto(url):
         url_zdjecia = None
         published_at = None
 
-        # 1. JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -206,7 +204,6 @@ def sprawdz_i_pobierz_otomoto(url):
 
                 published_at = ad_data.get("createdTime") or ad_data.get("createdAt")
 
-        # 2. Tag HTML dla daty
         if not published_at:
             date_match = re.search(
                 r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
@@ -215,7 +212,6 @@ def sprawdz_i_pobierz_otomoto(url):
             if date_match:
                 published_at = date_match.group(1).strip()
 
-        # 3. Tag <h1> dla tytułu
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -225,7 +221,6 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        # 4. Cena rezerwowo
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -233,7 +228,6 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
-        # 5. Zdjęcie rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -357,7 +351,7 @@ st.markdown("""
 
 .hover-preview img {
     width: 100%;
-    height auto;
+    height: auto;
     border-radius: 6px;
     display: block;
 }
@@ -422,33 +416,51 @@ summary_list = get_tracked_summary()
 if not summary_list:
     st.info("Brak śledzonych ofert. Wklej link powyżej, aby dodać pierwsze auto.")
 else:
-    # --- FILTROWANIE I SORTOWANIE ---
-    col_filter, col_sort = st.columns([1, 1])
+    # --- PRZYCISKI MAREK (KLIKALNE TAGI) ---
+    st.caption("Filtruj po marce:")
+    
+    if "selected_brand" not in st.session_state:
+        st.session_state.selected_brand = None
 
-    # Unikalne marki z pobranych ofert
     available_brands = sorted(list(set(item['brand'] for item in summary_list)))
     
-    with col_filter:
-        selected_brand = st.selectbox(
-            "Filtr marki:",
-            ["Wszystkie marki"] + available_brands
-        )
+    # Tworzymy rządek z przyciskami filtrów
+    brand_cols = st.columns(len(available_brands) + 1)
+    
+    # Przycisk "Wszystkie"
+    with brand_cols[0]:
+        btn_type = "primary" if st.session_state.selected_brand is None else "secondary"
+        if st.button("Wszystkie", type=btn_type, use_container_width=True):
+            st.session_state.selected_brand = None
+            st.rerun()
 
-    with col_sort:
-        sort_option = st.selectbox(
-            "Sortuj według:",
-            [
-                "Najnowsze na rynku",
-                "Cena: Od najtańszych",
-                "Cena: Od najdroższych",
-                "Nazwa: A - Z"
-            ]
-        )
+    # Przyciski poszczególnych marek
+    for idx, brand in enumerate(available_brands):
+        with brand_cols[idx + 1]:
+            btn_type = "primary" if st.session_state.selected_brand == brand else "secondary"
+            if st.button(brand, type=btn_type, use_container_width=True):
+                # Kliknięcie aktywnej marki odznacza filtr
+                if st.session_state.selected_brand == brand:
+                    st.session_state.selected_brand = None
+                else:
+                    st.session_state.selected_brand = brand
+                st.rerun()
 
-    # Aplikowanie filtra
+    # --- SORTOWANIE ---
+    sort_option = st.selectbox(
+        "Sortuj według:",
+        [
+            "Najnowsze na rynku",
+            "Cena: Od najtańszych",
+            "Cena: Od najdroższych",
+            "Nazwa: A - Z"
+        ]
+    )
+
+    # Aplikowanie filtra marki
     filtered_list = summary_list
-    if selected_brand != "Wszystkie marki":
-        filtered_list = [item for item in summary_list if item['brand'] == selected_brand]
+    if st.session_state.selected_brand:
+        filtered_list = [item for item in summary_list if item['brand'] == st.session_state.selected_brand]
 
     # Aplikowanie sortowania
     if sort_option == "Najnowsze na rynku":
@@ -460,7 +472,7 @@ else:
     elif sort_option == "Nazwa: A - Z":
         filtered_list.sort(key=lambda x: x['title'].lower())
 
-    st.write("") # Odstęp
+    st.write("")
 
     # Renderowanie listy
     for item in filtered_list:
