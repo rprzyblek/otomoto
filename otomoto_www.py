@@ -9,7 +9,7 @@ import streamlit as st
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(
-    page_title="Oto ceny z Otomoto", 
+    page_title="Otomoto Price Tracker", 
     page_icon="🚗", 
     layout="centered"
 )
@@ -41,33 +41,27 @@ def init_db():
         )
     ''')
     
-    try:
-        c.execute("ALTER TABLE price_history ADD COLUMN title TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        c.execute("ALTER TABLE price_history ADD COLUMN is_active INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        c.execute("ALTER TABLE price_history ADD COLUMN published_at TEXT")
-    except sqlite3.OperationalError:
-        pass
+    # Bezpieczne dodawanie nowych kolumn w przypadku starszych wersji bazy
+    for col in ["title TEXT", "is_active INTEGER DEFAULT 1", "published_at TEXT"]:
+        try:
+            c.execute(f"ALTER TABLE price_history ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
     conn.close()
 
 def save_price_entry(url, title, price, is_active, image_url, published_at):
-    """Zapisuje nowy pomiar ceny/statusu oraz datę publikacji ogłoszenia."""
+    """Zapisuje nowy pomiar ceny/statusu z obsługą wartości NULL/None dla wygasłych ofert."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     active_int = 1 if is_active else 0
+    price_to_save = float(price) if price is not None else None
+
     c.execute(
         "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (url, title, price, active_int, now, image_url, published_at)
+        (url, title, price_to_save, active_int, now, image_url, published_at)
     )
     conn.commit()
     conn.close()
@@ -104,7 +98,7 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert."""
+    """Pobiera zestawienie śledzonych ofert z wyliczeniem różnicy cenowej i czasu na rynku."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
         "SELECT url, title, price, is_active, timestamp, image_url, published_at FROM price_history ORDER BY timestamp ASC",
@@ -162,7 +156,7 @@ init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera dane z Otomoto."""
+    """Pobiera nazwę, cenę, zdjęcie oraz dokładną datę wystawienia ogłoszenia z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
