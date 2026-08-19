@@ -13,11 +13,18 @@ st.set_page_config(
     layout="centered"
 )
 
+# --- MAPOWANIE MIESIĘCY ---
+MONTHS_PL = {
+    "stycznia": 1, "lutego": 2, "marca": 3, "kwietnia": 4,
+    "maja": 5, "czerwca": 6, "lipca": 7, "sierpnia": 8,
+    "września": 9, "października": 10, "listopada": 11, "grudnia": 12
+}
+
 # --- BAZA DANYCH (SQLite) ---
 DB_NAME = "price_tracker.db"
 
 def init_db():
-    """Inicjalizacja tabeli oraz automatyczna migracja bazy danych."""
+    """Inicjalizacja tabeli oraz migracja dodająca datę opublikowania ogłoszenia."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
@@ -28,7 +35,8 @@ def init_db():
             price REAL,
             is_active INTEGER DEFAULT 1,
             timestamp DATETIME NOT NULL,
-            image_url TEXT
+            image_url TEXT,
+            published_at TEXT
         )
     ''')
     
@@ -42,18 +50,23 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        c.execute("ALTER TABLE price_history ADD COLUMN published_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
-def save_price_entry(url, title, price, is_active, image_url):
-    """Zapisuje nowy pomiar ceny/statusu do bazy danych."""
+def save_price_entry(url, title, price, is_active, image_url, published_at):
+    """Zapisuje nowy pomiar ceny/statusu oraz datę publikacji ogłoszenia."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     active_int = 1 if is_active else 0
     c.execute(
-        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url) VALUES (?, ?, ?, ?, ?, ?)",
-        (url, title, price, active_int, now, image_url)
+        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (url, title, price, active_int, now, image_url, published_at)
     )
     conn.commit()
     conn.close()
@@ -66,11 +79,27 @@ def delete_offer(url):
     conn.commit()
     conn.close()
 
+def parse_publication_date(date_str):
+    """Konwertuje napis np. '17 sierpnia 2026 12:51' na obiekt datetime."""
+    if not date_str:
+        return None
+    try:
+        match = re.search(r'(\d{1,2})\s+([a-złóężąśćźń]+)\s+(\d{4})', date_str, re.IGNORECASE)
+        if match:
+            day = int(match.group(1))
+            month_str = match.group(2).lower()
+            year = int(match.group(3))
+            month = MONTHS_PL.get(month_str, 1)
+            return datetime(year, month, day)
+    except Exception:
+        pass
+    return None
+
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert z wyliczeniem różnicy ceny i czasu na rynku."""
+    """Pobiera zestawienie śledzonych ofert z wyliczeniem czasu na rynku od wystawienia."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
-        "SELECT url, title, price, is_active, timestamp, image_url FROM price_history ORDER BY timestamp ASC",
+        "SELECT url, title, price, is_active, timestamp, image_url, published_at FROM price_history ORDER BY timestamp ASC",
         conn
     )
     conn.close()
@@ -97,10 +126,15 @@ def get_tracked_summary():
             diff = current_price - first_price
 
         image_url = latest_entry['image_url']
+        published_at_str = latest_entry['published_at'] or first_entry['published_at']
 
-        # Wyliczanie czasu na rynku od pierwszego zapisania w bazie
-        first_seen_dt = datetime.strptime(first_entry['timestamp'], "%Y-%m-%d %H:%M:%S")
-        days_on_market = (now_dt - first_seen_dt).days
+        # Wyliczenie rzeczywistego czasu na rynku
+        pub_dt = parse_publication_date(published_at_str)
+        if pub_dt:
+            days_on_market = (now_dt - pub_dt).days
+        else:
+            first_seen_dt = datetime.strptime(first_entry['timestamp'], "%Y-%m-%d %H:%M:%S")
+            days_on_market = (now_dt - first_seen_dt).days
 
         summary.append({
             'url': url,
@@ -110,7 +144,7 @@ def get_tracked_summary():
             'diff': diff,
             'image_url': image_url,
             'days_on_market': days_on_market,
-            'first_seen': first_entry['timestamp'],
+            'published_at': published_at_str,
             'last_updated': latest_entry['timestamp']
         })
 
@@ -121,7 +155,7 @@ init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera nazwę, aktualną cenę i zdjęcie z Otomoto."""
+    """Pobiera nazwę, cenę, zdjęcie oraz dokładną datę wystawienia ogłoszenia z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -136,18 +170,19 @@ def sprawdz_i_pobierz_otomoto(url):
         response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code in [403, 404, 410]:
-            return None, None, False, None
+            return None, None, False, None, None
 
         html = response.text
 
         if "Ogłoszenie jest nieaktualne" in html or "To ogłoszenie nie jest już dostępne" in html:
-            return None, None, False, None
+            return None, None, False, None, None
 
         title = None
         cena = None
         url_zdjecia = None
+        published_at = None
 
-        # 1. JSON __NEXT_DATA__
+        # 1. Wyciąganie danych z JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -162,7 +197,19 @@ def sprawdz_i_pobierz_otomoto(url):
                 if photos:
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
-        # 2. Tag <h1>
+                # Data z JSON jeśli istnieje
+                published_at = ad_data.get("createdTime") or ad_data.get("createdAt")
+
+        # 2. Pobieranie daty opublikowania z tagu HTML (jeśli brak w JSON)
+        if not published_at:
+            date_match = re.search(
+                r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
+                html, re.IGNORECASE
+            )
+            if date_match:
+                published_at = date_match.group(1).strip()
+
+        # 3. Pobieranie tytułu z <h1> jeśli brak
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -172,13 +219,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        # 3. Metatagi
-        if not title:
-            og_title_match = re.search(r'<meta property="og:title" content="(.*?)"', html)
-            if og_title_match:
-                title = og_title_match.group(1)
-
-        # 4. Cena rezerwowo
+        # 4. Pobieranie ceny z treści strony jeśli brak
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -186,7 +227,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
-        # 5. Zdjęcie rezerwowo
+        # 5. Pobieranie zdjęcia rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -195,12 +236,12 @@ def sprawdz_i_pobierz_otomoto(url):
         final_title = title if title else "Ogłoszenie Otomoto"
 
         if cena is not None:
-            return final_title, cena, True, url_zdjecia
+            return final_title, cena, True, url_zdjecia, published_at
 
     except Exception as e:
         st.error(f"Błąd połączenia: {e}")
 
-    return None, None, False, None
+    return None, None, False, None, None
 
 # --- STYLIZACJA CSS ---
 st.markdown("""
@@ -334,14 +375,14 @@ if st.button("Sprawdź i dodaj", type="primary"):
         st.warning("Proszę podać poprawny URL.")
     else:
         with st.spinner("Pobieranie danych z Otomoto..."):
-            nazwa, cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(url_input)
+            nazwa, cena, aktywne, zdjecie, data_wystawienia = sprawdz_i_pobierz_otomoto(url_input)
 
         if aktywne and cena is not None:
-            save_price_entry(url_input, nazwa, cena, True, zdjecie)
+            save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
             st.rerun()
         else:
-            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie)
+            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
             st.rerun()
 
@@ -358,12 +399,13 @@ with col_head2:
             total = len(summary_to_refresh)
             
             for index, item in enumerate(summary_to_refresh):
-                nazwa, cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(item['url'])
+                nazwa, cena, aktywne, zdjecie, data_wystawienia = sprawdz_i_pobierz_otomoto(item['url'])
                 
                 title_to_save = nazwa if nazwa else item['title']
                 img_to_save = zdjecie if zdjecie else item['image_url']
+                pub_to_save = data_wystawienia if data_wystawienia else item['published_at']
                 
-                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save)
+                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save, pub_to_save)
                 progress_bar.progress((index + 1) / total)
 
             st.success("Zaktualizowano wszystkie oferty!")
@@ -378,16 +420,15 @@ else:
         col_item, col_delete = st.columns([12, 1])
 
         with col_item:
-            # Formatowanie informacji o czasie na rynku
             days = item['days_on_market']
             if days == 0:
-                time_str = "⏱️ Dodano dzisiaj"
+                time_str = "⏱️ Wystawiono dzisiaj"
             elif days == 1:
-                time_str = "⏱️ 1 dzień w apce"
+                time_str = "⏱️ 1 dzień na rynku"
             else:
-                time_str = f"⏱️ {days} dni w apce"
+                time_str = f"⏱️ {days} dni na rynku"
 
-            if not item['is_active']:
+            if item['is_active'] is False:
                 title_class = "offer-title inactive"
                 price_html = '<span class="status-badge-expired">Niedostępne / Wygaśnięte</span>'
                 delta_html = ""
