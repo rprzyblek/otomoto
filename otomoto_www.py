@@ -95,6 +95,13 @@ def parse_publication_date(date_str):
         pass
     return None
 
+def extract_brand(title):
+    """Wyciąga pierwszą nazwę (markę) z tytułu ogłoszenia."""
+    if not title or title == "Ogłoszenie Otomoto":
+        return "Inne"
+    parts = title.strip().split()
+    return parts[0].capitalize() if parts else "Inne"
+
 def get_tracked_summary():
     """Pobiera zestawienie śledzonych ofert z wyliczeniem czasu na rynku od wystawienia."""
     conn = sqlite3.connect(DB_NAME)
@@ -139,7 +146,8 @@ def get_tracked_summary():
         summary.append({
             'url': url,
             'title': title,
-            'current_price': current_price,
+            'brand': extract_brand(title),
+            'current_price': current_price if current_price is not None else 0,
             'is_active': is_active,
             'diff': diff,
             'image_url': image_url,
@@ -148,7 +156,6 @@ def get_tracked_summary():
             'last_updated': latest_entry['timestamp']
         })
 
-    summary.reverse()
     return summary
 
 init_db()
@@ -182,7 +189,7 @@ def sprawdz_i_pobierz_otomoto(url):
         url_zdjecia = None
         published_at = None
 
-        # 1. Wyciąganie danych z JSON __NEXT_DATA__
+        # 1. JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -197,10 +204,9 @@ def sprawdz_i_pobierz_otomoto(url):
                 if photos:
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
-                # Data z JSON jeśli istnieje
                 published_at = ad_data.get("createdTime") or ad_data.get("createdAt")
 
-        # 2. Pobieranie daty opublikowania z tagu HTML (jeśli brak w JSON)
+        # 2. Tag HTML dla daty
         if not published_at:
             date_match = re.search(
                 r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
@@ -209,7 +215,7 @@ def sprawdz_i_pobierz_otomoto(url):
             if date_match:
                 published_at = date_match.group(1).strip()
 
-        # 3. Pobieranie tytułu z <h1> jeśli brak
+        # 3. Tag <h1> dla tytułu
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -219,7 +225,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        # 4. Pobieranie ceny z treści strony jeśli brak
+        # 4. Cena rezerwowo
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -227,7 +233,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
-        # 5. Pobieranie zdjęcia rezerwowo
+        # 5. Zdjęcie rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -351,7 +357,7 @@ st.markdown("""
 
 .hover-preview img {
     width: 100%;
-    height: auto;
+    height auto;
     border-radius: 6px;
     display: block;
 }
@@ -416,7 +422,48 @@ summary_list = get_tracked_summary()
 if not summary_list:
     st.info("Brak śledzonych ofert. Wklej link powyżej, aby dodać pierwsze auto.")
 else:
-    for item in summary_list:
+    # --- FILTROWANIE I SORTOWANIE ---
+    col_filter, col_sort = st.columns([1, 1])
+
+    # Unikalne marki z pobranych ofert
+    available_brands = sorted(list(set(item['brand'] for item in summary_list)))
+    
+    with col_filter:
+        selected_brand = st.selectbox(
+            "Filtr marki:",
+            ["Wszystkie marki"] + available_brands
+        )
+
+    with col_sort:
+        sort_option = st.selectbox(
+            "Sortuj według:",
+            [
+                "Najnowsze na rynku",
+                "Cena: Od najtańszych",
+                "Cena: Od najdroższych",
+                "Nazwa: A - Z"
+            ]
+        )
+
+    # Aplikowanie filtra
+    filtered_list = summary_list
+    if selected_brand != "Wszystkie marki":
+        filtered_list = [item for item in summary_list if item['brand'] == selected_brand]
+
+    # Aplikowanie sortowania
+    if sort_option == "Najnowsze na rynku":
+        filtered_list.sort(key=lambda x: x['days_on_market'])
+    elif sort_option == "Cena: Od najtańszych":
+        filtered_list.sort(key=lambda x: x['current_price'])
+    elif sort_option == "Cena: Od najdroższych":
+        filtered_list.sort(key=lambda x: x['current_price'], reverse=True)
+    elif sort_option == "Nazwa: A - Z":
+        filtered_list.sort(key=lambda x: x['title'].lower())
+
+    st.write("") # Odstęp
+
+    # Renderowanie listy
+    for item in filtered_list:
         col_item, col_delete = st.columns([12, 1])
 
         with col_item:
