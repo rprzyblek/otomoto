@@ -67,7 +67,7 @@ def delete_offer(url):
     conn.close()
 
 def get_tracked_summary():
-    """Pobiera zestawienie wszystkich śledzonych ofert z wyliczeniem różnicy ceny (+/-)."""
+    """Pobiera zestawienie śledzonych ofert z wyliczeniem różnicy ceny i czasu na rynku."""
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(
         "SELECT url, title, price, is_active, timestamp, image_url FROM price_history ORDER BY timestamp ASC",
@@ -80,6 +80,7 @@ def get_tracked_summary():
 
     summary = []
     grouped = df.groupby('url')
+    now_dt = datetime.now()
 
     for url, group in grouped:
         first_entry = group.iloc[0]
@@ -97,6 +98,10 @@ def get_tracked_summary():
 
         image_url = latest_entry['image_url']
 
+        # Wyliczanie czasu na rynku od pierwszego zapisania w bazie
+        first_seen_dt = datetime.strptime(first_entry['timestamp'], "%Y-%m-%d %H:%M:%S")
+        days_on_market = (now_dt - first_seen_dt).days
+
         summary.append({
             'url': url,
             'title': title,
@@ -104,6 +109,8 @@ def get_tracked_summary():
             'is_active': is_active,
             'diff': diff,
             'image_url': image_url,
+            'days_on_market': days_on_market,
+            'first_seen': first_entry['timestamp'],
             'last_updated': latest_entry['timestamp']
         })
 
@@ -140,7 +147,7 @@ def sprawdz_i_pobierz_otomoto(url):
         cena = None
         url_zdjecia = None
 
-        # 1. Wyciąganie danych z JSON __NEXT_DATA__
+        # 1. JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -155,7 +162,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if photos:
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
-        # 2. Pobieranie tytułu z tagu <h1>
+        # 2. Tag <h1>
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -165,13 +172,13 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        # 3. Pobieranie tytułu z metatagów (rezerwa)
+        # 3. Metatagi
         if not title:
             og_title_match = re.search(r'<meta property="og:title" content="(.*?)"', html)
             if og_title_match:
                 title = og_title_match.group(1)
 
-        # 4. Pobieranie ceny z treści strony (rezerwa)
+        # 4. Cena rezerwowo
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -179,7 +186,7 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
-        # 5. Pobieranie zdjęcia z OpenGraph (rezerwa)
+        # 5. Zdjęcie rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -218,7 +225,7 @@ st.markdown("""
     display: flex;
     flex-direction: column;
     gap: 4px;
-    max-width: 60%;
+    max-width: 55%;
 }
 
 .offer-title {
@@ -235,6 +242,11 @@ st.markdown("""
 
 .offer-title:hover {
     color: #ff4b4b;
+}
+
+.market-time-badge {
+    font-size: 12px;
+    color: #9ca3af;
 }
 
 .offer-price-box {
@@ -335,7 +347,6 @@ if st.button("Sprawdź i dodaj", type="primary"):
 
 st.divider()
 
-# Nagłówek i przycisk Odśwież Wszystko
 col_head1, col_head2 = st.columns([2, 1])
 with col_head1:
     st.subheader("📋 Śledzone oferty")
@@ -349,7 +360,6 @@ with col_head2:
             for index, item in enumerate(summary_to_refresh):
                 nazwa, cena, aktywne, zdjecie = sprawdz_i_pobierz_otomoto(item['url'])
                 
-                # Jeśli scraper nie wyciągnął nazwy/zdjęcia, zachowujemy stare z bazy
                 title_to_save = nazwa if nazwa else item['title']
                 img_to_save = zdjecie if zdjecie else item['image_url']
                 
@@ -368,6 +378,15 @@ else:
         col_item, col_delete = st.columns([12, 1])
 
         with col_item:
+            # Formatowanie informacji o czasie na rynku
+            days = item['days_on_market']
+            if days == 0:
+                time_str = "⏱️ Dodano dzisiaj"
+            elif days == 1:
+                time_str = "⏱️ 1 dzień w apce"
+            else:
+                time_str = f"⏱️ {days} dni w apce"
+
             if not item['is_active']:
                 title_class = "offer-title inactive"
                 price_html = '<span class="status-badge-expired">Niedostępne / Wygaśnięte</span>'
@@ -397,6 +416,7 @@ else:
                 <div class="offer-row">
                     <div class="offer-info">
                         <a href="{item['url']}" target="_blank" class="{title_class}">{item['title']}</a>
+                        <span class="market-time-badge">{time_str}</span>
                     </div>
                     <div class="offer-price-box">
                         {price_html}
