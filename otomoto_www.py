@@ -71,7 +71,6 @@ def get_tracked_summary():
         first_entry = group.iloc[0]
         latest_entry = group.iloc[-1]
 
-        # Obsługa wartości None/NaN dla starych wpisów
         title = latest_entry['title'] if pd.notna(latest_entry['title']) and latest_entry['title'] else "Ogłoszenie Otomoto"
         current_price = latest_entry['price']
         first_price = first_entry['price']
@@ -90,7 +89,6 @@ def get_tracked_summary():
     summary.reverse()
     return summary
 
-# Uruchomienie inicjalizacji bazy i migracji
 init_db()
 
 # --- SCRAPER ---
@@ -117,37 +115,59 @@ def sprawdz_i_pobierz_otomoto(url):
         if "Ogłoszenie jest nieaktualne" in html or "To ogłoszenie nie jest już dostępne" in html:
             return None, None, False, None
 
+        title = None
+        cena = None
+        url_zdjecia = None
+
+        # 1. Wyciąganie danych z JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
             ad_data = json_data.get("props", {}).get("pageProps", {}).get("ad", {})
 
             if ad_data:
-                title = ad_data.get("title") or "Ogłoszenie Otomoto"
-                cena = float(ad_data["price"]["value"])
+                title = ad_data.get("title")
+                if ad_data.get("price") and "value" in ad_data["price"]:
+                    cena = float(ad_data["price"]["value"])
                 photos = ad_data.get("photos", [])
-                url_zdjecia = None
 
                 if photos:
                     url_zdjecia = photos[0].get("url") or photos[0].get("medium")
 
-                return title, cena, True, url_zdjecia
+        # 2. Pobieranie tytułu z tagu <h1> z klasą offer-title
+        if not title:
+            h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
+            if not h1_match:
+                h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
+                
+            if h1_match:
+                title_raw = h1_match.group(1)
+                title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        title_match = re.search(r'<meta property="og:title" content="(.*?)"', html)
-        title_alt = title_match.group(1) if title_match else "Ogłoszenie Otomoto"
+        # 3. Pobieranie tytułu z metatagów (rezerwa)
+        if not title:
+            og_title_match = re.search(r'<meta property="og:title" content="(.*?)"', html)
+            if og_title_match:
+                title = og_title_match.group(1)
 
-        price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
-        cena_alt = None
-        if price_match:
-            clean = "".join(re.findall(r"\d+", price_match.group(1)))
-            if clean:
-                cena_alt = float(clean)
+        # 4. Pobieranie ceny z treści strony (rezerwa)
+        if cena is None:
+            price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
+            if price_match:
+                clean = "".join(re.findall(r"\d+", price_match.group(1)))
+                if clean:
+                    cena = float(clean)
 
-        og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
-        url_zdjecia_alt = og_image_match.group(1) if og_image_match else None
+        # 5. Pobieranie zdjęcia z OpenGraph (rezerwa)
+        if not url_zdjecia:
+            og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
+            if og_image_match:
+                url_zdjecia = og_image_match.group(1)
 
-        if cena_alt is not None:
-            return title_alt, cena_alt, True, url_zdjecia_alt
+        final_title = title if title else "Ogłoszenie Otomoto"
+
+        if cena is not None:
+            return final_title, cena, True, url_zdjecia
 
     except Exception as e:
         st.error(f"Błąd połączenia: {e}")
