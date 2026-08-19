@@ -1,96 +1,93 @@
+import re
 import json
-import os
-from datetime import datetime
-import streamlit as st
-import pandas as pd
+import urllib.request
+from playwright.sync_api import sync_playwright
 
-DB_FILE = "historia_cen_web.json"
+def sprawdz_i_pobierz_otomoto(url):
+    """
+    Optymalizowany pod serwery chmurowe scraper Otomoto.
+    Zwraca: (cena, czy_aktywne, url_zdjecia)
+    """
+    try:
+        with sync_playwright() as p:
+            # Flagi wymagane na serwerach chmurowych (Linux/Docker) do ominięcia Cloudflare
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars"
+                ]
+            )
+            
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                locale="pl-PL",
+                viewport={"width": 1920, "height": 1080}
+            )
+            
+            # Maskowanie faktu, że to automatyzacja (ukrycie webdrivera)
+            page = context.new_page()
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            response = page.goto(url, wait_until="domcontentloaded", timeout=40000)
+            
+            if response is None or response.status in [403, 404, 410]:
+                browser.close()
+                return None, False, None
+                
+            page.wait_for_timeout(3000)
+            html_content = page.content()
+            
+            # Sprawdzenie nieaktywności
+            if "Ogłoszenie jest nieaktualne" in html_content or "To ogłoszenie nie jest już dostępne" in html_content:
+                browser.close()
+                return None, False, None
 
-def wczytaj_baze():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+            cena = None
+            url_zdjecia = None
 
-def zapisz_baze(dane):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(dane, f, indent=4, ensure_ascii=False)
+            # 1. Odczyt ceny z tagu __NEXT_DATA__ (najbardziej odporne na serwerach)
+            try:
+                next_data = page.locator('script#__NEXT_DATA__')
+                if next_data.count() > 0:
+                    json_raw = next_data.inner_text()
+                    data = json.loads(json_raw)
+                    ad_data = data['props']['pageProps']['ad']
+                    cena = float(ad_data['price']['value'])
+                    
+                    photos = ad_data.get('photos', [])
+                    if photos:
+                        url_zdjecia = photos[0].get('url') or photos[0].get('medium')
+            except Exception:
+                pass
 
-# Konfiguracja układy strony WWW
-st.set_page_config(page_title="Price Tracker WWW", page_icon="📈", layout="wide")
+            # 2. Rezerwowe pobieranie ceny z tytułu strony lub nagłówków
+            if cena is None:
+                title_text = page.title()
+                match = re.search(r'(\d[\d\s]+)\s*PLN', title_text)
+                if match:
+                    clean = ''.join(re.findall(r'\d+', match.group(1)))
+                    if clean:
+                        cena = float(clean)
 
-st.title("📈 Price Tracker WWW")
-st.caption("Aplikacja webowa do monitorowania cen w Pythonie")
+            # 3. Rezerwowe pobieranie zdjęcia z OpenGraph
+            if not url_zdjecia:
+                try:
+                    og_image = page.locator('meta[property="og:image"]')
+                    if og_image.count() > 0:
+                        url_zdjecia = og_image.first.get_attribute("content")
+                except Exception:
+                    pass
 
-# --- PANEL BOCZNY (Sidebar) ---
-st.sidebar.header("➕ Dodaj nowy produkt")
-nazwa = st.sidebar.text_input("Nazwa / Model")
-url = st.sidebar.text_input("Link do oferty")
-cena_startowa = st.sidebar.number_input("Cena początkowa (PLN)", min_value=0.0, step=100.0)
+            browser.close()
+            
+            if cena is not None:
+                return cena, True, url_zdjecia
 
-if st.sidebar.button("Dodaj do bazy", use_container_width=True):
-    if nazwa and url:
-        baza = wczytaj_baze()
-        dzis = datetime.now().strftime("%Y-%m-%d")
+    except Exception as e:
+        print(f"Błąd Playwright: {e}")
         
-        baza[nazwa] = {
-            "url": url,
-            "aktywny": True,
-            "historia": {dzis: cena_startowa}
-        }
-        zapisz_baze(baza)
-        st.sidebar.success(f"Dodano: {nazwa}")
-        st.rerun()
-    else:
-        st.sidebar.error("Wypełnij nazwę oraz link!")
-
-# --- GŁÓWNY PANEL ---
-baza = wczytaj_baze()
-
-if not baza:
-    st.info("Baza danych jest pusta. Dodaj pierwszy produkt w panelu bocznym po lewej stronie.")
-else:
-    wybrany_produkt = st.selectbox("Wybierz śledzony pojazd / przedmiot:", list(sorted(baza.keys())))
-
-    if wybrany_produkt:
-        dane = baza[wybrany_produkt]
-        historia = dane["historia"]
-
-        # Przygotowanie danych do wykresu w Pandas
-        df = pd.DataFrame(list(historia.items()), columns=["Data", "Cena"])
-        df["Data"] = pd.to_datetime(df["Data"])
-        df = df.sort_values("Data")
-
-        ostatnia_cena = df["Cena"].iloc[-1]
-        pierwsza_cena = df["Cena"].iloc[0]
-        roznica = ostatnia_cena - pierwsza_cena
-
-        # KPI Metrics
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Aktualna cena", f"{ostatnia_cena:,.0f} PLN".replace(",", " "))
-        col2.metric("Cena początkowa", f"{pierwsza_cena:,.0f} PLN".replace(",", " "))
-        col3.metric(
-            "Zmiana ceny", 
-            f"{roznica:,.0f} PLN".replace(",", " "), 
-            delta=f"{roznica:,.0f} PLN", 
-            delta_color="inverse"
-        )
-
-        st.divider()
-
-        # Interaktywny wykres liniowy
-        st.subheader("📉 Wykres historii ceny")
-        st.line_chart(df.set_index("Data")["Cena"])
-
-        # Link zewnętrzny i tabela historii
-        st.markdown(f"[🔗 Otwórz oryginalne ogłoszenie]({dane['url']})")
-        
-        with st.expander("Pokaż surowe dane w tabeli"):
-            st.dataframe(df, use_container_width=True)
-
-        # Przycisk usuwania
-        if st.button("🗑️ Usuń ten produkt z bazy", type="secondary"):
-            del baza[wybrany_produkt]
-            zapisz_baze(baza)
-            st.success("Usunięto z bazy!")
-            st.rerun()
+    return None, False, None
