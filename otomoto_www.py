@@ -9,7 +9,7 @@ import streamlit as st
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(
-    page_title="Otomoto Price Tracker", 
+    page_title="Oto ceny z Otomoto", 
     page_icon="🚗", 
     layout="centered"
 )
