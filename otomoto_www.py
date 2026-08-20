@@ -1,9 +1,9 @@
 import json
 import os
 import re
-import sqlite3
 from datetime import datetime
 import pandas as pd
+import psycopg2
 import requests
 import streamlit as st
 
@@ -21,57 +21,46 @@ MONTHS_PL = {
     "września": 9, "października": 10, "listopada": 11, "grudnia": 12
 }
 
-# --- BAZA DANYCH (SQLite) ---
-DB_NAME = "price_tracker.db"
-
-def init_db():
-    """Inicjalizacja tabeli oraz migracja bazy danych."""
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT NOT NULL,
-            title TEXT,
-            price REAL,
-            is_active INTEGER DEFAULT 1,
-            timestamp DATETIME NOT NULL,
-            image_url TEXT,
-            published_at TEXT,
-            location TEXT
-        )
-    ''')
-    
-    for col in ["title TEXT", "is_active INTEGER DEFAULT 1", "published_at TEXT", "location TEXT"]:
-        try:
-            c.execute(f"ALTER TABLE price_history ADD COLUMN {col}")
-        except sqlite3.OperationalError:
-            pass
-
-    conn.commit()
-    conn.close()
+# --- BAZA DANYCH (Supabase / PostgreSQL) ---
+def get_db_connection():
+    """Nawiązuje połączenie z bazą PostgreSQL w Supabase."""
+    try:
+        conn = psycopg2.connect(st.secrets["DATABASE_URL"])
+        return conn
+    except Exception as e:
+        st.error(f"Błąd połączenia z bazą Supabase: {e}")
+        return None
 
 def save_price_entry(url, title, price, is_active, image_url, published_at, location):
-    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację."""
-    conn = sqlite3.connect(DB_NAME)
+    """Zapisuje nowy pomiar ceny/statusu do bazy PostgreSQL."""
+    conn = get_db_connection()
+    if not conn:
+        return
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
     active_int = 1 if is_active else 0
     price_to_save = float(price) if price is not None else None
 
     c.execute(
-        "INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at, location) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
         (url, title, price_to_save, active_int, now, image_url, published_at, location)
     )
     conn.commit()
+    c.close()
     conn.close()
 
 def delete_offer(url):
     """Usuwa całą historię powiązaną z danym URL."""
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
+    if not conn:
+        return
     c = conn.cursor()
-    c.execute("DELETE FROM price_history WHERE url = ?", (url,))
+    c.execute("DELETE FROM price_history WHERE url = %s", (url,))
     conn.commit()
+    c.close()
     conn.close()
 
 def parse_publication_date(date_str):
@@ -98,7 +87,7 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def clean_location(raw_loc):
-    """Oczyszcza napis z adresu, usuwając wstrzyknięte style CSS, ikony i zbędne frazy."""
+    """Oczyszcza napis z adresu."""
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
     
@@ -113,7 +102,10 @@ def clean_location(raw_loc):
 
 def get_tracked_summary():
     """Pobiera zestawienie śledzonych ofert."""
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
+    if not conn:
+        return []
+        
     df = pd.read_sql_query(
         "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
         conn
@@ -149,7 +141,7 @@ def get_tracked_summary():
         if pub_dt:
             days_on_market = (now_dt - pub_dt).days
         else:
-            first_seen_dt = datetime.strptime(first_entry['timestamp'], "%Y-%m-%d %H:%M:%S")
+            first_seen_dt = pd.to_datetime(first_entry['timestamp'])
             days_on_market = (now_dt - first_seen_dt).days
 
         summary.append({
@@ -167,8 +159,6 @@ def get_tracked_summary():
         })
 
     return summary
-
-init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
@@ -392,7 +382,6 @@ st.markdown("""
     display: block;
 }
 
-/* Ukrycie obramowania domyślnego formularza Streamlit */
 div[data-testid="stForm"] {
     border: none;
     padding: 0;
@@ -410,7 +399,7 @@ with col_logo2:
     else:
         st.title("🚗 OTOMOTO śledzę ceny")
 
-# --- FORMULARZ DODAWANIA OFERTY (Z AUTOMATYCZNYM CZYSZCZENIEM) ---
+# --- FORMULARZ DODAWANIA OFERTY ---
 with st.form("add_offer_form", clear_on_submit=True):
     url_input = st.text_input(
         "Dodaj nowe ogłoszenie do śledzenia:",
