@@ -3,3 +3,4 @@ pandas
 playwright
 pillow
 matplotlib
+psycopg2-binary
