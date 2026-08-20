@@ -110,7 +110,7 @@ def extract_brand(title):
     return parts[0].capitalize() if parts else "Inne"
 
 def clean_location(raw_loc):
-    """Oczyszcza napis z adresu."""
+    """Oczyszcza napis z adresu, usuwając wstrzyknięte style CSS, ikony i zbędne frazy."""
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
     
@@ -125,15 +125,15 @@ def clean_location(raw_loc):
 
 def get_tracked_summary():
     """Pobiera zestawienie śledzonych ofert."""
-    conn = get_db_connection()
-    if not conn:
+    try:
+        # Przekazanie adresu URI zapobiega ostrzeżeniom UserWarning w Pandas
+        df = pd.read_sql_query(
+            "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
+            st.secrets["DATABASE_URL"]
+        )
+    except Exception as e:
+        st.error(f"Błąd odczytu z bazy: {e}")
         return []
-        
-    df = pd.read_sql_query(
-        "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
-        conn
-    )
-    conn.close()
 
     if df.empty:
         return []
