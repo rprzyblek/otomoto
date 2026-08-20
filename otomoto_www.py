@@ -391,6 +391,12 @@ st.markdown("""
 .offer-row:hover .hover-preview {
     display: block;
 }
+
+/* Ukrycie obramowania domyślnego formularza Streamlit */
+div[data-testid="stForm"] {
+    border: none;
+    padding: 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -404,18 +410,15 @@ with col_logo2:
     else:
         st.title("🚗 OTOMOTO śledzę ceny")
 
-# --- CALLBACK DO CZYSZCZENIA POLA ---
-def clear_url_input():
-    st.session_state.url_input_key = ""
+# --- FORMULARZ DODAWANIA OFERTY (Z AUTOMATYCZNYM CZYSZCZENIEM) ---
+with st.form("add_offer_form", clear_on_submit=True):
+    url_input = st.text_input(
+        "Dodaj nowe ogłoszenie do śledzenia:",
+        placeholder="tutaj wklej link z otomoto"
+    )
+    submit_button = st.form_submit_button("Sprawdź i dodaj", type="primary")
 
-# --- INTERFEJS STREAMLIT ---
-url_input = st.text_input(
-    "Dodaj nowe ogłoszenie do śledzenia:",
-    placeholder="tutaj wklej link z otomoto",
-    key="url_input_key"
-)
-
-if st.button("Sprawdź i dodaj", type="primary", on_click=clear_url_input):
+if submit_button:
     if not url_input.strip():
         st.warning("Proszę podać poprawny URL.")
     else:
