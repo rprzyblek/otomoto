@@ -52,7 +52,7 @@ def init_db():
     conn.close()
 
 def save_price_entry(url, title, price, is_active, image_url, published_at, location):
-    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację z obsługą braku ceny (None)."""
+    """Zapisuje nowy pomiar ceny/statusu oraz lokalizację."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -102,13 +102,8 @@ def clean_location(raw_loc):
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
     
-    # 1. Usuwanie kodu CSS (np. .ooa-1xwoou1{...})
     loc = re.sub(r'\.[a-zA-Z0-9_-]+\s*\{[^}]*\}', '', raw_loc)
-    
-    # 2. Usuwanie tagów HTML
     loc = re.sub(r'<[^>]+>', '', loc)
-    
-    # 3. Usuwanie kodów pocztowych i dopisków ulic
     loc = re.sub(r'^\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE)
@@ -205,7 +200,6 @@ def sprawdz_i_pobierz_otomoto(url):
         published_at = None
         location = None
 
-        # 1. JSON __NEXT_DATA__
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
             json_data = json.loads(match.group(1))
@@ -231,7 +225,6 @@ def sprawdz_i_pobierz_otomoto(url):
                     elif city:
                         location = clean_location(city)
 
-        # 2. Rezerwowe pobieranie lokalizacji z HTML z filtrowaniem śmieci
         if not location:
             loc_matches = re.findall(
                 r'<p[^>]*class="[^"]*ooa-889rdv[^"]*"[^>]*>(.*?)</p>',
@@ -243,7 +236,6 @@ def sprawdz_i_pobierz_otomoto(url):
                     location = cand_loc
                     break
 
-        # 3. Pobieranie daty opublikowania
         if not published_at:
             date_match = re.search(
                 r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
@@ -252,7 +244,6 @@ def sprawdz_i_pobierz_otomoto(url):
             if date_match:
                 published_at = date_match.group(1).strip()
 
-        # 4. Pobieranie tytułu z <h1>
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
             if not h1_match:
@@ -262,7 +253,6 @@ def sprawdz_i_pobierz_otomoto(url):
                 title_raw = h1_match.group(1)
                 title = re.sub(r'<[^>]+>', '', title_raw).strip()
 
-        # 5. Pobieranie ceny rezerwowo
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
             if price_match:
@@ -270,7 +260,6 @@ def sprawdz_i_pobierz_otomoto(url):
                 if clean:
                     cena = float(clean)
 
-        # 6. Pobieranie zdjęcia rezerwowo
         if not url_zdjecia:
             og_image_match = re.search(r'<meta property="og:image" content="(.*?)"', html)
             if og_image_match:
@@ -409,23 +398,24 @@ st.markdown("""
 col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
 with col_logo2:
     if os.path.exists("logo.jpg"):
-        st.image("logo.jpg", use_container_width=True)
+        st.image("logo.jpg", width="stretch")
     elif os.path.exists("logo.png"):
-        st.image("logo.png", use_container_width=True)
+        st.image("logo.png", width="stretch")
     else:
         st.title("🚗 OTOMOTO śledzę ceny")
 
-# --- INTERFEJS STREAMLIT ---
-if "url_input_key" not in st.session_state:
+# --- CALLBACK DO CZYSZCZENIA POLA ---
+def clear_url_input():
     st.session_state.url_input_key = ""
 
+# --- INTERFEJS STREAMLIT ---
 url_input = st.text_input(
     "Dodaj nowe ogłoszenie do śledzenia:",
     placeholder="tutaj wklej link z otomoto",
     key="url_input_key"
 )
 
-if st.button("Sprawdź i dodaj", type="primary"):
+if st.button("Sprawdź i dodaj", type="primary", on_click=clear_url_input):
     if not url_input.strip():
         st.warning("Proszę podać poprawny URL.")
     else:
@@ -435,12 +425,10 @@ if st.button("Sprawdź i dodaj", type="primary"):
         if aktywne and cena is not None:
             save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia, lokalizacja)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
-            st.session_state.url_input_key = ""
             st.rerun()
         else:
             save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia, lokalizacja)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
-            st.session_state.url_input_key = ""
             st.rerun()
 
 st.divider()
@@ -449,7 +437,7 @@ col_head1, col_head2 = st.columns([2, 1])
 with col_head1:
     st.subheader("📋 Śledzone oferty")
 with col_head2:
-    if st.button("🔄 Odśwież wszystkie", use_container_width=True):
+    if st.button("🔄 Odśwież wszystkie", width="stretch"):
         summary_to_refresh = get_tracked_summary()
         if summary_to_refresh:
             progress_bar = st.progress(0)
@@ -485,14 +473,14 @@ else:
     
     with brand_cols[0]:
         btn_type = "primary" if st.session_state.selected_brand is None else "secondary"
-        if st.button("Wszystkie", type=btn_type, use_container_width=True):
+        if st.button("Wszystkie", type=btn_type, width="stretch"):
             st.session_state.selected_brand = None
             st.rerun()
 
     for idx, brand in enumerate(available_brands):
         with brand_cols[idx + 1]:
             btn_type = "primary" if st.session_state.selected_brand == brand else "secondary"
-            if st.button(brand, type=btn_type, use_container_width=True):
+            if st.button(brand, type=btn_type, width="stretch"):
                 if st.session_state.selected_brand == brand:
                     st.session_state.selected_brand = None
                 else:
