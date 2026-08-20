@@ -31,6 +31,29 @@ def get_db_connection():
         st.error(f"Błąd połączenia z bazą Supabase: {e}")
         return None
 
+def init_db():
+    """Tworzy tabelę w Supabase, jeśli jeszcze nie istnieje."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS price_history (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            title TEXT,
+            price NUMERIC,
+            is_active INT DEFAULT 1,
+            timestamp TIMESTAMP NOT NULL,
+            image_url TEXT,
+            published_at TEXT,
+            location TEXT
+        );
+    ''')
+    conn.commit()
+    c.close()
+    conn.close()
+
 def save_price_entry(url, title, price, is_active, image_url, published_at, location):
     """Zapisuje nowy pomiar ceny/statusu do bazy PostgreSQL."""
     conn = get_db_connection()
@@ -159,6 +182,9 @@ def get_tracked_summary():
         })
 
     return summary
+
+# Inicjalizacja struktury bazy przy uruchomieniu
+init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
