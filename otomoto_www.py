@@ -256,7 +256,6 @@ def sprawdz_i_pobierz_otomoto(url):
                     elif city:
                         location = clean_location(city)
 
-                # Wyciąganie specyfikacji (Rocznik, Przebieg, Pojemność, Paliwo)
                 params = ad_data.get("params", [])
                 engine_capacity = None
                 engine_power = None
@@ -327,34 +326,27 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None, None, None, None, None, None, None
 
-# --- STYLIZACJA KAFELKOWA (OTOMOTO LOOK) ---
+# --- STYLIZACJA KAFELKOWA ---
 st.markdown("""
 <style>
-/* Karta ogłoszenia - wzorowana na Otomoto */
 .otomoto-card {
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     overflow: hidden;
-    margin-bottom: 20px;
+    margin-bottom: 12px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
-    display: flex;
-    flex-direction: column;
-    height: 100%;
 }
 
 .otomoto-card-img {
     width: 100%;
-    height: 210px;
+    height: 200px;
     object-fit: cover;
     display: block;
 }
 
 .otomoto-card-body {
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    flex-grow: 1;
+    padding: 14px;
     color: #1e293b;
 }
 
@@ -362,11 +354,11 @@ st.markdown("""
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 
 .otomoto-price {
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 800;
     color: #0f172a;
 }
@@ -374,59 +366,45 @@ st.markdown("""
 .otomoto-title {
     font-size: 15px;
     font-weight: 700;
-    color: #0f172a;
-    text-decoration: none;
+    color: #0f172a !important;
+    text-decoration: none !important;
     margin-bottom: 4px;
+    display: block;
     line-height: 1.3;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    height: 40px;
 }
 
 .otomoto-title:hover {
-    color: #0071CE;
+    color: #0071CE !important;
 }
 
 .otomoto-engine {
     font-size: 12px;
     color: #64748b;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
 }
 
 .otomoto-specs {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
     font-size: 13px;
     color: #334155;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     border-top: 1px solid #f1f5f9;
-    padding-top: 8px;
-}
-
-.spec-line {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+    padding-top: 6px;
 }
 
 .otomoto-footer {
-    margin-top: auto;
     font-size: 12px;
     color: #64748b;
     display: flex;
     justify-content: space-between;
     align-items: center;
     border-top: 1px solid #f1f5f9;
-    padding-top: 8px;
+    padding-top: 6px;
 }
 
 .price-delta-green {
     color: #16a34a;
     font-weight: bold;
-    font-size: 13px;
+    font-size: 12px;
     background: #dcfce7;
     padding: 2px 6px;
     border-radius: 4px;
@@ -435,7 +413,7 @@ st.markdown("""
 .price-delta-red {
     color: #dc2626;
     font-weight: bold;
-    font-size: 13px;
+    font-size: 12px;
     background: #fee2e2;
     padding: 2px 6px;
     border-radius: 4px;
@@ -557,14 +535,12 @@ else:
 
     st.write("")
 
-    # --- SIATKA KAFELKOWA (2 KOLUMNY LUB 4 NA SZEROKIM EKRANIE) ---
     grid_cols = st.columns(2)
 
     for index, item in enumerate(filtered_list):
         col = grid_cols[index % 2]
 
         with col:
-            # Formatowanie ceny i różnicy
             if not item['is_active']:
                 price_html = '<span style="color: #dc2626; font-size: 16px; font-weight: bold;">Niedostępne</span>'
                 delta_html = ""
@@ -578,7 +554,7 @@ else:
                 else:
                     delta_html = ""
 
-            img_url = item['image_url'] or "https://via.placeholder.com/400x250?text=Brak+Zdj%C4%99cia"
+            img_url = item['image_url'] or "https://via.placeholder.com/400x250?text=Brak+Zdjęcia"
             engine_str = item['engine'] if item['engine'] else ""
             mileage_str = f"🛣️ {item['mileage']}" if item['mileage'] else ""
             fuel_str = f"⛽ {item['fuel']}" if item['fuel'] else ""
@@ -588,34 +564,23 @@ else:
             days = item['days_on_market']
             time_str = "⏱️ Dzisiaj" if days == 0 else (f"⏱️ 1 dzień" if days == 1 else f"⏱️ {days} dni")
 
-            st.markdown(f"""
-            <div class="otomoto-card">
-                <img src="{img_url}" class="otomoto-card-img" />
-                <div class="otomoto-card-body">
-                    <div class="otomoto-price-row">
-                        {price_html}
-                        {delta_html}
-                    </div>
-                    <a href="{item['url']}" target="_blank" class="otomoto-title">{item['title']}</a>
-                    <div class="otomoto-engine">{engine_str}</div>
-                    <div class="otomoto-specs">
-                        <div class="spec-line">
-                            <span>{mileage_str}</span>
-                        </div>
-                        <div class="spec-line">
-                            <span>{fuel_str}</span>
-                            <span>{year_str}</span>
-                        </div>
-                    </div>
-                    <div class="otomoto-footer">
-                        <span>📍 {location_str}</span>
-                        <span>{time_str}</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Przygotowanie zwartego HTML bez wcięć Markdown
+            card_html = (
+                f'<div class="otomoto-card">'
+                f'<img src="{img_url}" class="otomoto-card-img" />'
+                f'<div class="otomoto-card-body">'
+                f'<div class="otomoto-price-row">{price_html}{delta_html}</div>'
+                f'<a href="{item["url"]}" target="_blank" class="otomoto-title">{item["title"]}</a>'
+                f'<div class="otomoto-engine">{engine_str}</div>'
+                f'<div class="otomoto-specs"><div>{mileage_str}</div><div>{fuel_str} &nbsp; {year_str}</div></div>'
+                f'<div class="otomoto-footer"><span>📍 {location_str}</span><span>{time_str}</span></div>'
+                f'</div>'
+                f'</div>'
+            )
 
-            if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", use_container_width=True):
+            st.markdown(card_html, unsafe_allow_html=True)
+
+            if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", width="stretch"):
                 delete_offer(item['url'])
                 st.rerun()
             st.write("")
