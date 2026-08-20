@@ -340,7 +340,7 @@ st.markdown("""
 
 .otomoto-card-img {
     width: 100%;
-    height: 200px;
+    height: 180px;
     object-fit: cover;
     display: block;
 }
@@ -535,10 +535,11 @@ else:
 
     st.write("")
 
-    grid_cols = st.columns(2)
+    # --- SIATKA KAFELKOWA (3 KOLUMNY) ---
+    grid_cols = st.columns(3)
 
     for index, item in enumerate(filtered_list):
-        col = grid_cols[index % 2]
+        col = grid_cols[index % 3]
 
         with col:
             if not item['is_active']:
@@ -564,7 +565,6 @@ else:
             days = item['days_on_market']
             time_str = "⏱️ Dzisiaj" if days == 0 else (f"⏱️ 1 dzień" if days == 1 else f"⏱️ {days} dni")
 
-            # Przygotowanie zwartego HTML bez wcięć Markdown
             card_html = (
                 f'<div class="otomoto-card">'
                 f'<img src="{img_url}" class="otomoto-card-img" />'
