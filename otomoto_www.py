@@ -176,7 +176,6 @@ def get_tracked_summary():
             first_seen_dt = pd.to_datetime(first_entry['timestamp'])
             days_on_market = (now_dt - first_seen_dt).days
 
-        # Przygotowanie pełnej historii cen dla wybranego samochodu
         history_df = group[['timestamp', 'price']].dropna().copy()
         history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
 
@@ -331,7 +330,7 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None, None, None, None, None, None, None
 
-# --- STYLIZACJA KAFELKOWA ---
+# --- RESPONSYWNA STYLIZACJA KAFELKOWA (4 KOLUMNY DESKTOP) ---
 st.markdown("""
 <style>
 .otomoto-card {
@@ -341,17 +340,18 @@ st.markdown("""
     overflow: hidden;
     margin-bottom: 8px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    height: 100%;
 }
 
 .otomoto-card-img {
     width: 100%;
-    height: 180px;
+    height: 160px;
     object-fit: cover;
     display: block;
 }
 
 .otomoto-card-body {
-    padding: 14px;
+    padding: 12px;
     color: #1e293b;
 }
 
@@ -359,23 +359,25 @@ st.markdown("""
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 
 .otomoto-price {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 800;
     color: #0f172a;
 }
 
 .otomoto-title {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     color: #0f172a !important;
     text-decoration: none !important;
     margin-bottom: 4px;
     display: block;
-    line-height: 1.3;
+    line-height: 1.25;
+    height: 36px;
+    overflow: hidden;
 }
 
 .otomoto-title:hover {
@@ -383,21 +385,21 @@ st.markdown("""
 }
 
 .otomoto-engine {
-    font-size: 12px;
+    font-size: 11px;
     color: #64748b;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 
 .otomoto-specs {
-    font-size: 13px;
+    font-size: 12px;
     color: #334155;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     border-top: 1px solid #f1f5f9;
     padding-top: 6px;
 }
 
 .otomoto-footer {
-    font-size: 12px;
+    font-size: 11px;
     color: #64748b;
     display: flex;
     justify-content: space-between;
@@ -409,18 +411,18 @@ st.markdown("""
 .price-delta-green {
     color: #16a34a;
     font-weight: bold;
-    font-size: 12px;
+    font-size: 11px;
     background: #dcfce7;
-    padding: 2px 6px;
+    padding: 2px 5px;
     border-radius: 4px;
 }
 
 .price-delta-red {
     color: #dc2626;
     font-weight: bold;
-    font-size: 12px;
+    font-size: 11px;
     background: #fee2e2;
-    padding: 2px 6px;
+    padding: 2px 5px;
     border-radius: 4px;
 }
 
@@ -540,15 +542,15 @@ else:
 
     st.write("")
 
-    # --- SIATKA KAFELKOWA (3 KOLUMNY) ---
-    grid_cols = st.columns(3)
+    # --- RESPONSYWNA SIATKA 4 KOLUMN ---
+    grid_cols = st.columns(4)
 
     for index, item in enumerate(filtered_list):
-        col = grid_cols[index % 3]
+        col = grid_cols[index % 4]
 
         with col:
             if not item['is_active']:
-                price_html = '<span style="color: #dc2626; font-size: 16px; font-weight: bold;">Niedostępne</span>'
+                price_html = '<span style="color: #dc2626; font-size: 15px; font-weight: bold;">Niedostępne</span>'
                 delta_html = ""
             else:
                 price_html = f'<span class="otomoto-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
@@ -585,22 +587,18 @@ else:
 
             st.markdown(card_html, unsafe_allow_html=True)
 
-            # --- ROZWIJANA HISTORIA CEN POD KAFELKIEM ---
             with st.expander("📈 Historia cen", expanded=False):
                 hist_df = item['history']
                 if not hist_df.empty:
-                    # Wykres liniowy zmian ceny
                     chart_data = hist_df.set_index('timestamp')
-                    st.line_chart(chart_data['price'], height=150)
-                    
-                    # Tabela historii zmian
+                    st.line_chart(chart_data['price'], height=130)
                     st.dataframe(
-                        hist_df.rename(columns={'timestamp': 'Data pomiaru', 'price': 'Cena (PLN)'}),
+                        hist_df.rename(columns={'timestamp': 'Data', 'price': 'Cena (PLN)'}),
                         width="stretch",
                         hide_index=True
                     )
                 else:
-                    st.caption("Brak wystarczającej liczby pomiarów.")
+                    st.caption("Brak danych.")
 
             if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", width="stretch"):
                 delete_offer(item['url'])
