@@ -176,6 +176,10 @@ def get_tracked_summary():
             first_seen_dt = pd.to_datetime(first_entry['timestamp'])
             days_on_market = (now_dt - first_seen_dt).days
 
+        # Przygotowanie pełnej historii cen dla wybranego samochodu
+        history_df = group[['timestamp', 'price']].dropna().copy()
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+
         summary.append({
             'url': url,
             'title': title,
@@ -191,6 +195,7 @@ def get_tracked_summary():
             'mileage': latest_entry['mileage'] if pd.notna(latest_entry['mileage']) else None,
             'engine': latest_entry['engine'] if pd.notna(latest_entry['engine']) else None,
             'fuel': latest_entry['fuel'] if pd.notna(latest_entry['fuel']) else None,
+            'history': history_df,
             'last_updated': latest_entry['timestamp']
         })
 
@@ -334,7 +339,7 @@ st.markdown("""
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     overflow: hidden;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
 }
 
@@ -579,6 +584,23 @@ else:
             )
 
             st.markdown(card_html, unsafe_allow_html=True)
+
+            # --- ROZWIJANA HISTORIA CEN POD KAFELKIEM ---
+            with st.expander("📈 Historia cen", expanded=False):
+                hist_df = item['history']
+                if not hist_df.empty:
+                    # Wykres liniowy zmian ceny
+                    chart_data = hist_df.set_index('timestamp')
+                    st.line_chart(chart_data['price'], height=150)
+                    
+                    # Tabela historii zmian
+                    st.dataframe(
+                        hist_df.rename(columns={'timestamp': 'Data pomiaru', 'price': 'Cena (PLN)'}),
+                        width="stretch",
+                        hide_index=True
+                    )
+                else:
+                    st.caption("Brak wystarczającej liczby pomiarów.")
 
             if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", width="stretch"):
                 delete_offer(item['url'])
