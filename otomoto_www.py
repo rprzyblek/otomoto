@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import warnings
 from datetime import datetime
 import pandas as pd
 import psycopg2
@@ -11,7 +12,7 @@ import streamlit as st
 st.set_page_config(
     page_title="Otomoto Price Tracker", 
     page_icon="🚗", 
-    layout="centered"
+    layout="wide"
 )
 
 # --- MAPOWANIE MIESIĘCY ---
@@ -23,7 +24,6 @@ MONTHS_PL = {
 
 # --- BAZA DANYCH (Supabase / PostgreSQL) ---
 def get_db_connection():
-    """Nawiązuje połączenie z bazą PostgreSQL w Supabase."""
     try:
         conn = psycopg2.connect(st.secrets["DATABASE_URL"])
         return conn
@@ -32,7 +32,6 @@ def get_db_connection():
         return None
 
 def init_db():
-    """Tworzy tabelę w Supabase, jeśli jeszcze nie istnieje."""
     conn = get_db_connection()
     if not conn:
         return
@@ -47,15 +46,25 @@ def init_db():
             timestamp TIMESTAMP NOT NULL,
             image_url TEXT,
             published_at TEXT,
-            location TEXT
+            location TEXT,
+            year INT,
+            mileage TEXT,
+            engine TEXT,
+            fuel TEXT
         );
     ''')
+    
+    for col in ["title TEXT", "is_active INT DEFAULT 1", "published_at TEXT", "location TEXT", "year INT", "mileage TEXT", "engine TEXT", "fuel TEXT"]:
+        try:
+            c.execute(f"ALTER TABLE price_history ADD COLUMN IF NOT EXISTS {col};")
+        except Exception:
+            pass
+
     conn.commit()
     c.close()
     conn.close()
 
-def save_price_entry(url, title, price, is_active, image_url, published_at, location):
-    """Zapisuje nowy pomiar ceny/statusu do bazy PostgreSQL."""
+def save_price_entry(url, title, price, is_active, image_url, published_at, location, year, mileage, engine, fuel):
     conn = get_db_connection()
     if not conn:
         return
@@ -66,17 +75,16 @@ def save_price_entry(url, title, price, is_active, image_url, published_at, loca
 
     c.execute(
         """
-        INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at, location) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO price_history (url, title, price, is_active, timestamp, image_url, published_at, location, year, mileage, engine, fuel) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (url, title, price_to_save, active_int, now, image_url, published_at, location)
+        (url, title, price_to_save, active_int, now, image_url, published_at, location, year, mileage, engine, fuel)
     )
     conn.commit()
     c.close()
     conn.close()
 
 def delete_offer(url):
-    """Usuwa całą historię powiązaną z danym URL."""
     conn = get_db_connection()
     if not conn:
         return
@@ -87,7 +95,6 @@ def delete_offer(url):
     conn.close()
 
 def parse_publication_date(date_str):
-    """Konwertuje napis np. '17 sierpnia 2026 12:51' na obiekt datetime."""
     if not date_str:
         return None
     try:
@@ -103,37 +110,39 @@ def parse_publication_date(date_str):
     return None
 
 def extract_brand(title):
-    """Wyciąga pierwszą nazwę (markę) z tytułu ogłoszenia."""
     if not title or title == "Ogłoszenie Otomoto":
         return "Inne"
     parts = title.strip().split()
     return parts[0].capitalize() if parts else "Inne"
 
 def clean_location(raw_loc):
-    """Oczyszcza napis z adresu, usuwając wstrzyknięte style CSS, ikony i zbędne frazy."""
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
-    
     loc = re.sub(r'\.[a-zA-Z0-9_-]+\s*\{[^}]*\}', '', raw_loc)
     loc = re.sub(r'<[^>]+>', '', loc)
     loc = re.sub(r'^\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'.*?-\s*\d{2}-\d{3}\s*', '', loc)
     loc = re.sub(r'\s*\(Polska\)', '', loc, flags=re.IGNORECASE)
-    
     loc = loc.strip()
     return loc if loc else None
 
 def get_tracked_summary():
-    """Pobiera zestawienie śledzonych ofert."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+        
     try:
-        # Przekazanie adresu URI zapobiega ostrzeżeniom UserWarning w Pandas
-        df = pd.read_sql_query(
-            "SELECT url, title, price, is_active, timestamp, image_url, published_at, location FROM price_history ORDER BY timestamp ASC",
-            st.secrets["DATABASE_URL"]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            df = pd.read_sql_query(
+                "SELECT url, title, price, is_active, timestamp, image_url, published_at, location, year, mileage, engine, fuel FROM price_history ORDER BY timestamp ASC",
+                conn
+            )
     except Exception as e:
         st.error(f"Błąd odczytu z bazy: {e}")
         return []
+    finally:
+        conn.close()
 
     if df.empty:
         return []
@@ -178,17 +187,19 @@ def get_tracked_summary():
             'days_on_market': days_on_market,
             'published_at': published_at_str,
             'location': location_str,
+            'year': latest_entry['year'] if pd.notna(latest_entry['year']) else None,
+            'mileage': latest_entry['mileage'] if pd.notna(latest_entry['mileage']) else None,
+            'engine': latest_entry['engine'] if pd.notna(latest_entry['engine']) else None,
+            'fuel': latest_entry['fuel'] if pd.notna(latest_entry['fuel']) else None,
             'last_updated': latest_entry['timestamp']
         })
 
     return summary
 
-# Inicjalizacja struktury bazy przy uruchomieniu
 init_db()
 
 # --- SCRAPER ---
 def sprawdz_i_pobierz_otomoto(url):
-    """Pobiera nazwę, cenę, zdjęcie, datę oraz dokładną lokalizację z Otomoto."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -203,18 +214,22 @@ def sprawdz_i_pobierz_otomoto(url):
         response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code in [403, 404, 410]:
-            return None, None, False, None, None, None
+            return None, None, False, None, None, None, None, None, None, None
 
         html = response.text
 
         if "Ogłoszenie jest nieaktualne" in html or "To ogłoszenie nie jest już dostępne" in html:
-            return None, None, False, None, None, None
+            return None, None, False, None, None, None, None, None, None, None
 
         title = None
         cena = None
         url_zdjecia = None
         published_at = None
         location = None
+        year = None
+        mileage = None
+        engine = None
+        fuel = None
 
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if match:
@@ -241,11 +256,39 @@ def sprawdz_i_pobierz_otomoto(url):
                     elif city:
                         location = clean_location(city)
 
+                # Wyciąganie specyfikacji (Rocznik, Przebieg, Pojemność, Paliwo)
+                params = ad_data.get("params", [])
+                engine_capacity = None
+                engine_power = None
+
+                for p in params:
+                    key = p.get("key")
+                    value = p.get("value")
+                    display_value = p.get("displayValue")
+
+                    if key == "year":
+                        try:
+                            year = int(value)
+                        except Exception:
+                            pass
+                    elif key == "mileage":
+                        mileage = f"{int(value):,} km".replace(",", " ") if value and value.isdigit() else display_value
+                    elif key == "fuel_type":
+                        fuel = display_value
+                    elif key == "engine_capacity":
+                        engine_capacity = f"{int(value)} cm³" if value and value.isdigit() else display_value
+                    elif key == "engine_power":
+                        engine_power = f"{int(value)} KM" if value and value.isdigit() else display_value
+
+                if engine_capacity and engine_power:
+                    engine = f"{engine_capacity} • {engine_power}"
+                elif engine_capacity:
+                    engine = engine_capacity
+                elif engine_power:
+                    engine = engine_power
+
         if not location:
-            loc_matches = re.findall(
-                r'<p[^>]*class="[^"]*ooa-889rdv[^"]*"[^>]*>(.*?)</p>',
-                html, re.DOTALL | re.IGNORECASE
-            )
+            loc_matches = re.findall(r'<p[^>]*class="[^"]*ooa-889rdv[^"]*"[^>]*>(.*?)</p>', html, re.DOTALL | re.IGNORECASE)
             for loc_raw in loc_matches:
                 cand_loc = clean_location(loc_raw)
                 if cand_loc:
@@ -253,21 +296,14 @@ def sprawdz_i_pobierz_otomoto(url):
                     break
 
         if not published_at:
-            date_match = re.search(
-                r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>',
-                html, re.IGNORECASE
-            )
+            date_match = re.search(r'<p[^>]*class="[^"]*text-foreground-secondary[^"]*"[^>]*>(\d{1,2}\s+[a-złóężąśćźń]+\s+\d{4}[^<]*)</p>', html, re.IGNORECASE)
             if date_match:
                 published_at = date_match.group(1).strip()
 
         if not title:
             h1_match = re.search(r'<h1[^>]*class="[^"]*offer-title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
-            if not h1_match:
-                h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
-                
             if h1_match:
-                title_raw = h1_match.group(1)
-                title = re.sub(r'<[^>]+>', '', title_raw).strip()
+                title = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
 
         if cena is None:
             price_match = re.search(r"(\d[\d\s]+)\s*PLN", html)
@@ -284,128 +320,125 @@ def sprawdz_i_pobierz_otomoto(url):
         final_title = title if title else "Ogłoszenie Otomoto"
 
         if cena is not None:
-            return final_title, cena, True, url_zdjecia, published_at, location
+            return final_title, cena, True, url_zdjecia, published_at, location, year, mileage, engine, fuel
 
     except Exception as e:
         st.error(f"Błąd połączenia: {e}")
 
-    return None, None, False, None, None, None
+    return None, None, False, None, None, None, None, None, None, None
 
-# --- STYLIZACJA CSS ---
+# --- STYLIZACJA KAFELKOWA (OTOMOTO LOOK) ---
 st.markdown("""
 <style>
-.offer-row {
-    position: relative;
+/* Karta ogłoszenia - wzorowana na Otomoto */
+.otomoto-card {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.otomoto-card-img {
+    width: 100%;
+    height: 210px;
+    object-fit: cover;
+    display: block;
+}
+
+.otomoto-card-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    color: #1e293b;
+}
+
+.otomoto-price-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.otomoto-price {
+    font-size: 22px;
+    font-weight: 800;
+    color: #0f172a;
+}
+
+.otomoto-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #0f172a;
+    text-decoration: none;
+    margin-bottom: 4px;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    height: 40px;
+}
+
+.otomoto-title:hover {
+    color: #0071CE;
+}
+
+.otomoto-engine {
+    font-size: 12px;
+    color: #64748b;
+    margin-bottom: 12px;
+}
+
+.otomoto-specs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    color: #334155;
+    margin-bottom: 12px;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 8px;
+}
+
+.spec-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.otomoto-footer {
+    margin-top: auto;
+    font-size: 12px;
+    color: #64748b;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background-color: #1e2129;
-    border: 1px solid #2d313e;
-    border-radius: 8px;
-    transition: background-color 0.2s ease;
-}
-
-.offer-row:hover {
-    background-color: #2b303c;
-}
-
-.offer-info {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-width: 55%;
-}
-
-.offer-title {
-    font-weight: 600;
-    font-size: 15px;
-    color: #ffffff;
-    text-decoration: none;
-}
-
-.offer-title.inactive {
-    text-decoration: line-through;
-    color: #9ca3af;
-}
-
-.offer-title:hover {
-    color: #ff4b4b;
-}
-
-.market-time-badge {
-    font-size: 12px;
-    color: #9ca3af;
-}
-
-.offer-price-box {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.current-price {
-    font-weight: bold;
-    font-size: 15px;
-    color: #ffffff;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 8px;
 }
 
 .price-delta-green {
-    color: #22c55e;
+    color: #16a34a;
     font-weight: bold;
     font-size: 13px;
-    background: rgba(34, 197, 94, 0.1);
+    background: #dcfce7;
     padding: 2px 6px;
     border-radius: 4px;
 }
 
 .price-delta-red {
-    color: #ef4444;
+    color: #dc2626;
     font-weight: bold;
     font-size: 13px;
-    background: rgba(239, 68, 68, 0.1);
+    background: #fee2e2;
     padding: 2px 6px;
     border-radius: 4px;
-}
-
-.price-delta-neutral {
-    color: #9ca3af;
-    font-weight: normal;
-    font-size: 13px;
-}
-
-.status-badge-expired {
-    color: #ef4444;
-    font-weight: bold;
-    font-size: 12px;
-    background: rgba(239, 68, 68, 0.15);
-    padding: 2px 8px;
-    border-radius: 4px;
-}
-
-.hover-preview {
-    display: none;
-    position: absolute;
-    left: 20px;
-    top: 100%;
-    z-index: 9999;
-    background: #111827;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    padding: 6px;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-    width: 260px;
-}
-
-.hover-preview img {
-    width: 100%;
-    height: auto;
-    border-radius: 6px;
-    display: block;
-}
-
-.offer-row:hover .hover-preview {
-    display: block;
 }
 
 div[data-testid="stForm"] {
@@ -415,7 +448,7 @@ div[data-testid="stForm"] {
 </style>
 """, unsafe_allow_html=True)
 
-# --- WYŚWIETLANIE LOGO ---
+# --- HEADER LOGO ---
 col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
 with col_logo2:
     if os.path.exists("logo.jpg"):
@@ -425,7 +458,7 @@ with col_logo2:
     else:
         st.title("🚗 OTOMOTO śledzę ceny")
 
-# --- FORMULARZ DODAWANIA OFERTY ---
+# --- FORMULARZ DODAWANIA ---
 with st.form("add_offer_form", clear_on_submit=True):
     url_input = st.text_input(
         "Dodaj nowe ogłoszenie do śledzenia:",
@@ -438,20 +471,20 @@ if submit_button:
         st.warning("Proszę podać poprawny URL.")
     else:
         with st.spinner("Pobieranie danych z Otomoto..."):
-            nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja = sprawdz_i_pobierz_otomoto(url_input)
+            nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja, rok, przebieg, silnik, paliwo = sprawdz_i_pobierz_otomoto(url_input)
 
         if aktywne and cena is not None:
-            save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia, lokalizacja)
+            save_price_entry(url_input, nazwa, cena, True, zdjecie, data_wystawienia, lokalizacja, rok, przebieg, silnik, paliwo)
             st.success(f"Zapisano: {nazwa} – {cena:,.0f} PLN".replace(",", " "))
             st.rerun()
         else:
-            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia, lokalizacja)
+            save_price_entry(url_input, nazwa or "Wygasłe ogłoszenie", None, False, zdjecie, data_wystawienia, lokalizacja, rok, przebieg, silnik, paliwo)
             st.warning("Ogłoszenie jest nieaktywne lub zostało usunięte. Zapisano status.")
             st.rerun()
 
 st.divider()
 
-col_head1, col_head2 = st.columns([2, 1])
+col_head1, col_head2 = st.columns([3, 1])
 with col_head1:
     st.subheader("📋 Śledzone oferty")
 with col_head2:
@@ -462,14 +495,14 @@ with col_head2:
             total = len(summary_to_refresh)
             
             for index, item in enumerate(summary_to_refresh):
-                nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja = sprawdz_i_pobierz_otomoto(item['url'])
+                nazwa, cena, aktywne, zdjecie, data_wystawienia, lokalizacja, rok, przebieg, silnik, paliwo = sprawdz_i_pobierz_otomoto(item['url'])
                 
                 title_to_save = nazwa if nazwa else item['title']
                 img_to_save = zdjecie if zdjecie else item['image_url']
                 pub_to_save = data_wystawienia if data_wystawienia else item['published_at']
                 loc_to_save = lokalizacja if lokalizacja else item['location']
                 
-                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save, pub_to_save, loc_to_save)
+                save_price_entry(item['url'], title_to_save, cena, aktywne, img_to_save, pub_to_save, loc_to_save, rok, przebieg, silnik, paliwo)
                 progress_bar.progress((index + 1) / total)
 
             st.success("Zaktualizowano wszystkie oferty!")
@@ -486,7 +519,6 @@ else:
         st.session_state.selected_brand = None
 
     available_brands = sorted(list(set(item['brand'] for item in summary_list)))
-    
     brand_cols = st.columns(len(available_brands) + 1)
     
     with brand_cols[0]:
@@ -507,12 +539,7 @@ else:
 
     sort_option = st.selectbox(
         "Sortuj według:",
-        [
-            "Najnowsze na rynku",
-            "Cena: Od najtańszych",
-            "Cena: Od najdroższych",
-            "Nazwa: A - Z"
-        ]
+        ["Najnowsze na rynku", "Cena: Od najtańszych", "Cena: Od najdroższych", "Nazwa: A - Z"]
     )
 
     filtered_list = summary_list
@@ -530,63 +557,65 @@ else:
 
     st.write("")
 
-    for item in filtered_list:
-        col_item, col_delete = st.columns([12, 1])
+    # --- SIATKA KAFELKOWA (2 KOLUMNY LUB 4 NA SZEROKIM EKRANIE) ---
+    grid_cols = st.columns(2)
 
-        with col_item:
-            days = item['days_on_market']
-            if days == 0:
-                time_str = "⏱️ Wystawiono dzisiaj"
-            elif days == 1:
-                time_str = "⏱️ 1 dzień na rynku"
-            else:
-                time_str = f"⏱️ {days} dni na rynku"
+    for index, item in enumerate(filtered_list):
+        col = grid_cols[index % 2]
 
-            loc_str = f" • 📍 {item['location']}" if item['location'] else ""
-            sub_info_str = f"{time_str}{loc_str}"
-
-            if item['is_active'] is False:
-                title_class = "offer-title inactive"
-                price_html = '<span class="status-badge-expired">Niedostępne / Wygaśnięte</span>'
+        with col:
+            # Formatowanie ceny i różnicy
+            if not item['is_active']:
+                price_html = '<span style="color: #dc2626; font-size: 16px; font-weight: bold;">Niedostępne</span>'
                 delta_html = ""
             else:
-                title_class = "offer-title"
-                price_html = f'<span class="current-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
-                
+                price_html = f'<span class="otomoto-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
                 diff = item['diff']
                 if diff < 0:
                     delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
                 elif diff > 0:
                     delta_html = f'<span class="price-delta-red">+{diff:,.0f} PLN</span>'.replace(",", " ")
                 else:
-                    delta_html = '<span class="price-delta-neutral">0 PLN</span>'
+                    delta_html = ""
 
-            img_preview_html = ""
-            if item['image_url']:
-                img_preview_html = f'''
-                <div class="hover-preview">
-                    <img src="{item['image_url']}" alt="Zdjęcie podglądowe" />
-                </div>
-                '''
+            img_url = item['image_url'] or "https://via.placeholder.com/400x250?text=Brak+Zdj%C4%99cia"
+            engine_str = item['engine'] if item['engine'] else ""
+            mileage_str = f"🛣️ {item['mileage']}" if item['mileage'] else ""
+            fuel_str = f"⛽ {item['fuel']}" if item['fuel'] else ""
+            year_str = f"📅 {item['year']}" if item['year'] else ""
+            location_str = item['location'] if item['location'] else "Brak lokalizacji"
+            
+            days = item['days_on_market']
+            time_str = "⏱️ Dzisiaj" if days == 0 else (f"⏱️ 1 dzień" if days == 1 else f"⏱️ {days} dni")
 
-            st.markdown(
-                f'''
-                <div class="offer-row">
-                    <div class="offer-info">
-                        <a href="{item['url']}" target="_blank" class="{title_class}">{item['title']}</a>
-                        <span class="market-time-badge">{sub_info_str}</span>
-                    </div>
-                    <div class="offer-price-box">
+            st.markdown(f"""
+            <div class="otomoto-card">
+                <img src="{img_url}" class="otomoto-card-img" />
+                <div class="otomoto-card-body">
+                    <div class="otomoto-price-row">
                         {price_html}
                         {delta_html}
                     </div>
-                    {img_preview_html}
+                    <a href="{item['url']}" target="_blank" class="otomoto-title">{item['title']}</a>
+                    <div class="otomoto-engine">{engine_str}</div>
+                    <div class="otomoto-specs">
+                        <div class="spec-line">
+                            <span>{mileage_str}</span>
+                        </div>
+                        <div class="spec-line">
+                            <span>{fuel_str}</span>
+                            <span>{year_str}</span>
+                        </div>
+                    </div>
+                    <div class="otomoto-footer">
+                        <span>📍 {location_str}</span>
+                        <span>{time_str}</span>
+                    </div>
                 </div>
-                ''',
-                unsafe_allow_html=True
-            )
+            </div>
+            """, unsafe_allow_html=True)
 
-        with col_delete:
-            if st.button("🗑️", key=f"del_{item['url']}", help="Usuń ofertę z listy"):
+            if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", use_container_width=True):
                 delete_offer(item['url'])
                 st.rerun()
+            st.write("")
