@@ -361,17 +361,31 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None, None, None, None, None, None, None
 
-# --- DYNAMICZNIE GENEROWANA STYLIZACJA Z SUWAKÓW ---
+# --- DYNAMICZNIE GENEROWANA STYLIZACJA KAFELKÓW I ICH KOLORÓW ---
 st.markdown(f"""
 <style>
+/* Domyślny kafelek */
 .otomoto-card {{
     background-color: #ffffff;
-    border: 1px solid #e2e8f0;
+    border: 2px solid #e2e8f0;
     border-radius: 8px;
     overflow: hidden;
     margin-bottom: {st.session_state.card_gap}px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     height: 100%;
+    transition: all 0.2s ease-in-out;
+}}
+
+/* Kafelek dla NIEDOSTĘPNYCH / WYGAŚNIĘTYCH ofert (Czerwony) */
+.otomoto-card.card-expired {{
+    border-color: #ef4444 !important;
+    background-color: #fef2f2 !important;
+}}
+
+/* Kafelek dla ofert ZE SPADKIEM CENY (Zielony) */
+.otomoto-card.card-discount {{
+    border-color: #22c55e !important;
+    background-color: #f0fdf4 !important;
 }}
 
 .otomoto-card-img {{
@@ -440,20 +454,20 @@ st.markdown(f"""
 }}
 
 .price-delta-green {{
-    color: #16a34a;
+    color: #15803d;
     font-weight: bold;
     font-size: 11px;
     background: #dcfce7;
-    padding: 2px 5px;
+    padding: 2px 6px;
     border-radius: 4px;
 }}
 
 .price-delta-red {{
-    color: #dc2626;
+    color: #b91c1c;
     font-weight: bold;
     font-size: 11px;
     background: #fee2e2;
-    padding: 2px 5px;
+    padding: 2px 6px;
     border-radius: 4px;
 }}
 
@@ -573,7 +587,7 @@ else:
 
     st.write("")
 
-    # --- DYNAMICZNIE DOBIENANA LICZBA KOLUMN ---
+    # --- DYNAMICZNIE DOBIERANA LICZBA KOLUMN ---
     num_cols = st.session_state.grid_columns
     grid_cols = st.columns(num_cols)
 
@@ -581,13 +595,18 @@ else:
         col = grid_cols[index % num_cols]
 
         with col:
+            # Określenie klasy stylującej na podstawie statusu / ceny
+            card_class = "otomoto-card"
+            
             if not item['is_active']:
+                card_class += " card-expired"
                 price_html = '<span style="color: #dc2626; font-size: 15px; font-weight: bold;">Niedostępne</span>'
                 delta_html = ""
             else:
                 price_html = f'<span class="otomoto-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
                 diff = item['diff']
                 if diff < 0:
+                    card_class += " card-discount"  # Zielone tło i obramowanie
                     delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
                 elif diff > 0:
                     delta_html = f'<span class="price-delta-red">+{diff:,.0f} PLN</span>'.replace(",", " ")
@@ -605,7 +624,7 @@ else:
             time_str = "⏱️ Dzisiaj" if days == 0 else (f"⏱️ 1 dzień" if days == 1 else f"⏱️ {days} dni")
 
             card_html = (
-                f'<div class="otomoto-card">'
+                f'<div class="{card_class}">'
                 f'<img src="{img_url}" class="otomoto-card-img" />'
                 f'<div class="otomoto-card-body">'
                 f'<div class="otomoto-price-row">{price_html}{delta_html}</div>'
