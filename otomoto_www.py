@@ -146,6 +146,13 @@ def extract_brand(title):
     parts = title.strip().split()
     return parts[0].capitalize() if parts else "Inne"
 
+def parse_mileage_num(mileage_str):
+    """Pomocnicza funkcja do konwersji ciągu '228 900 km' na cyfrę do sortowania."""
+    if not mileage_str:
+        return 9999999
+    digits = re.sub(r'[^\d]', '', mileage_str)
+    return int(digits) if digits else 9999999
+
 def clean_location(raw_loc):
     if not raw_loc or "Zobacz więcej" in raw_loc or "oferty" in raw_loc.lower():
         return None
@@ -210,6 +217,8 @@ def get_tracked_summary():
         history_df = group[['timestamp', 'price']].dropna().copy()
         history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
 
+        mileage_val = latest_entry['mileage'] if pd.notna(latest_entry['mileage']) else None
+
         summary.append({
             'url': url,
             'title': title,
@@ -220,13 +229,14 @@ def get_tracked_summary():
             'image_url': image_url,
             'days_on_market': days_on_market,
             'published_at': published_at_str,
-            'location': location_str,
-            'year': latest_entry['year'] if pd.notna(latest_entry['year']) else None,
-            'mileage': latest_entry['mileage'] if pd.notna(latest_entry['mileage']) else None,
+            'location': location_str or "",
+            'year': latest_entry['year'] if pd.notna(latest_entry['year']) else 0,
+            'mileage': mileage_val,
+            'mileage_num': parse_mileage_num(mileage_val),
             'engine': latest_entry['engine'] if pd.notna(latest_entry['engine']) else None,
             'fuel': latest_entry['fuel'] if pd.notna(latest_entry['fuel']) else None,
             'history': history_df,
-            'last_updated': latest_entry['timestamp']
+            'last_updated': pd.to_datetime(latest_entry['timestamp'])
         })
 
     return summary
@@ -361,10 +371,9 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None, None, None, None, None, None, None
 
-# --- DYNAMICZNIE GENEROWANA STYLIZACJA KAFELKÓW I ICH KOLORÓW ---
+# --- DYNAMICZNIE GENEROWANA STYLIZACJA KAFELKÓW ---
 st.markdown(f"""
 <style>
-/* Domyślny kafelek */
 .otomoto-card {{
     background-color: #ffffff;
     border: 2px solid #e2e8f0;
@@ -376,13 +385,11 @@ st.markdown(f"""
     transition: all 0.2s ease-in-out;
 }}
 
-/* Kafelek dla NIEDOSTĘPNYCH / WYGAŚNIĘTYCH ofert (Czerwony) */
 .otomoto-card.card-expired {{
     border-color: #ef4444 !important;
     background-color: #fef2f2 !important;
 }}
 
-/* Kafelek dla ofert ZE SPADKIEM CENY (Zielony) */
 .otomoto-card.card-discount {{
     border-color: #22c55e !important;
     background-color: #f0fdf4 !important;
@@ -567,21 +574,46 @@ else:
                     st.session_state.selected_brand = brand
                 st.rerun()
 
+    # --- PEŁNE MOŻLIWOŚCI SORTOWANIA ---
     sort_option = st.selectbox(
         "Sortuj według:",
-        ["Najnowsze na rynku", "Cena: Od najtańszych", "Cena: Od najdroższych", "Nazwa: A - Z"]
+        [
+            "Najnowsze na rynku",
+            "Najdłużej na rynku",
+            "Ostatnio zaktualizowane / sprawdzone",
+            "Cena: Od najtańszych",
+            "Cena: Od najdroższych",
+            "Największe spadki cen (Okazje)",
+            "Przebieg: Od najniższego",
+            "Rocznik: Od najmłodszego",
+            "Miejscowość: A - Z",
+            "Nazwa: A - Z"
+        ]
     )
 
     filtered_list = summary_list
     if st.session_state.selected_brand:
         filtered_list = [item for item in summary_list if item['brand'] == st.session_state.selected_brand]
 
+    # --- LOGIKA SORTOWANIA ---
     if sort_option == "Najnowsze na rynku":
         filtered_list.sort(key=lambda x: x['days_on_market'])
+    elif sort_option == "Najdłużej na rynku":
+        filtered_list.sort(key=lambda x: x['days_on_market'], reverse=True)
+    elif sort_option == "Ostatnio zaktualizowane / sprawdzone":
+        filtered_list.sort(key=lambda x: x['last_updated'], reverse=True)
     elif sort_option == "Cena: Od najtańszych":
         filtered_list.sort(key=lambda x: x['current_price'])
     elif sort_option == "Cena: Od najdroższych":
         filtered_list.sort(key=lambda x: x['current_price'], reverse=True)
+    elif sort_option == "Największe spadki cen (Okazje)":
+        filtered_list.sort(key=lambda x: x['diff'])
+    elif sort_option == "Przebieg: Od najniższego":
+        filtered_list.sort(key=lambda x: x['mileage_num'])
+    elif sort_option == "Rocznik: Od najmłodszego":
+        filtered_list.sort(key=lambda x: x['year'], reverse=True)
+    elif sort_option == "Miejscowość: A - Z":
+        filtered_list.sort(key=lambda x: x['location'].lower())
     elif sort_option == "Nazwa: A - Z":
         filtered_list.sort(key=lambda x: x['title'].lower())
 
@@ -595,7 +627,6 @@ else:
         col = grid_cols[index % num_cols]
 
         with col:
-            # Określenie klasy stylującej na podstawie statusu / ceny
             card_class = "otomoto-card"
             
             if not item['is_active']:
@@ -606,7 +637,7 @@ else:
                 price_html = f'<span class="otomoto-price">{item["current_price"]:,.0f} PLN</span>'.replace(",", " ")
                 diff = item['diff']
                 if diff < 0:
-                    card_class += " card-discount"  # Zielone tło i obramowanie
+                    card_class += " card-discount"
                     delta_html = f'<span class="price-delta-green">{diff:,.0f} PLN</span>'.replace(",", " ")
                 elif diff > 0:
                     delta_html = f'<span class="price-delta-red">+{diff:,.0f} PLN</span>'.replace(",", " ")
