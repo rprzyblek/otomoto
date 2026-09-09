@@ -8,12 +8,43 @@ import psycopg2
 import requests
 import streamlit as st
 
+# --- INITIAL SESSION STATE DLA USTAWIEŃ LAYOUTU ---
+if "grid_columns" not in st.session_state:
+    st.session_state.grid_columns = 4
+if "img_height" not in st.session_state:
+    st.session_state.img_height = 170
+if "card_gap" not in st.session_state:
+    st.session_state.card_gap = 12
+if "font_scale" not in st.session_state:
+    st.session_state.font_scale = 14
+
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(
     page_title="Otomoto Price Tracker", 
     page_icon="🚗", 
     layout="wide"
 )
+
+# --- PANEL KONFIGURACJI WYGLĄDU (SIDEBAR) ---
+with st.sidebar:
+    st.title("⚙️ Personalizacja Layoutu")
+    st.caption("Dostosuj widok kafelków do swojego ekranu")
+    
+    st.subheader("📐 Układ Siatki")
+    st.session_state.grid_columns = st.slider("Liczba kolumn:", min_value=1, max_value=6, value=st.session_state.grid_columns)
+    
+    st.subheader("🖼️ Wymiary Kafelka")
+    st.session_state.img_height = st.slider("Wysokość zdjęcia (px):", min_value=100, max_value=350, value=st.session_state.img_height, step=10)
+    st.session_state.font_scale = st.slider("Rozmiar czcionki tytułu (px):", min_value=11, max_value=20, value=st.session_state.font_scale)
+    st.session_state.card_gap = st.slider("Odstęp między kafelkami (px):", min_value=4, max_value=24, value=st.session_state.card_gap, step=2)
+
+    st.divider()
+    if st.button("🔄 Przywróć domyślne", use_container_width=True):
+        st.session_state.grid_columns = 4
+        st.session_state.img_height = 170
+        st.session_state.font_scale = 14
+        st.session_state.card_gap = 12
+        st.rerun()
 
 # --- MAPOWANIE MIESIĘCY ---
 MONTHS_PL = {
@@ -330,46 +361,46 @@ def sprawdz_i_pobierz_otomoto(url):
 
     return None, None, False, None, None, None, None, None, None, None
 
-# --- RESPONSYWNA STYLIZACJA KAFELKOWA (4 KOLUMNY DESKTOP) ---
-st.markdown("""
+# --- DYNAMICZNIE GENEROWANA STYLIZACJA Z SUWAKÓW ---
+st.markdown(f"""
 <style>
-.otomoto-card {
+.otomoto-card {{
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     overflow: hidden;
-    margin-bottom: 8px;
+    margin-bottom: {st.session_state.card_gap}px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     height: 100%;
-}
+}}
 
-.otomoto-card-img {
+.otomoto-card-img {{
     width: 100%;
-    height: 160px;
+    height: {st.session_state.img_height}px;
     object-fit: cover;
     display: block;
-}
+}}
 
-.otomoto-card-body {
+.otomoto-card-body {{
     padding: 12px;
     color: #1e293b;
-}
+}}
 
-.otomoto-price-row {
+.otomoto-price-row {{
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     margin-bottom: 4px;
-}
+}}
 
-.otomoto-price {
+.otomoto-price {{
     font-size: 18px;
     font-weight: 800;
     color: #0f172a;
-}
+}}
 
-.otomoto-title {
-    font-size: 14px;
+.otomoto-title {{
+    font-size: {st.session_state.font_scale}px;
     font-weight: 700;
     color: #0f172a !important;
     text-decoration: none !important;
@@ -378,27 +409,27 @@ st.markdown("""
     line-height: 1.25;
     height: 36px;
     overflow: hidden;
-}
+}}
 
-.otomoto-title:hover {
+.otomoto-title:hover {{
     color: #0071CE !important;
-}
+}}
 
-.otomoto-engine {
+.otomoto-engine {{
     font-size: 11px;
     color: #64748b;
     margin-bottom: 6px;
-}
+}}
 
-.otomoto-specs {
+.otomoto-specs {{
     font-size: 12px;
     color: #334155;
     margin-bottom: 6px;
     border-top: 1px solid #f1f5f9;
     padding-top: 6px;
-}
+}}
 
-.otomoto-footer {
+.otomoto-footer {{
     font-size: 11px;
     color: #64748b;
     display: flex;
@@ -406,30 +437,30 @@ st.markdown("""
     align-items: center;
     border-top: 1px solid #f1f5f9;
     padding-top: 6px;
-}
+}}
 
-.price-delta-green {
+.price-delta-green {{
     color: #16a34a;
     font-weight: bold;
     font-size: 11px;
     background: #dcfce7;
     padding: 2px 5px;
     border-radius: 4px;
-}
+}}
 
-.price-delta-red {
+.price-delta-red {{
     color: #dc2626;
     font-weight: bold;
     font-size: 11px;
     background: #fee2e2;
     padding: 2px 5px;
     border-radius: 4px;
-}
+}}
 
-div[data-testid="stForm"] {
+div[data-testid="stForm"] {{
     border: none;
     padding: 0;
-}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -437,9 +468,9 @@ div[data-testid="stForm"] {
 col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
 with col_logo2:
     if os.path.exists("logo.jpg"):
-        st.image("logo.jpg", width="stretch")
+        st.image("logo.jpg", use_container_width=True)
     elif os.path.exists("logo.png"):
-        st.image("logo.png", width="stretch")
+        st.image("logo.png", use_container_width=True)
     else:
         st.title("🚗 OTOMOTO śledzę ceny")
 
@@ -473,7 +504,7 @@ col_head1, col_head2 = st.columns([3, 1])
 with col_head1:
     st.subheader("📋 Śledzone oferty")
 with col_head2:
-    if st.button("🔄 Odśwież wszystkie", width="stretch"):
+    if st.button("🔄 Odśwież wszystkie", use_container_width=True):
         summary_to_refresh = get_tracked_summary()
         if summary_to_refresh:
             progress_bar = st.progress(0)
@@ -508,14 +539,14 @@ else:
     
     with brand_cols[0]:
         btn_type = "primary" if st.session_state.selected_brand is None else "secondary"
-        if st.button("Wszystkie", type=btn_type, width="stretch"):
+        if st.button("Wszystkie", type=btn_type, use_container_width=True):
             st.session_state.selected_brand = None
             st.rerun()
 
     for idx, brand in enumerate(available_brands):
         with brand_cols[idx + 1]:
             btn_type = "primary" if st.session_state.selected_brand == brand else "secondary"
-            if st.button(brand, type=btn_type, width="stretch"):
+            if st.button(brand, type=btn_type, use_container_width=True):
                 if st.session_state.selected_brand == brand:
                     st.session_state.selected_brand = None
                 else:
@@ -542,11 +573,12 @@ else:
 
     st.write("")
 
-    # --- RESPONSYWNA SIATKA 4 KOLUMN ---
-    grid_cols = st.columns(4)
+    # --- DYNAMICZNIE DOBIENANA LICZBA KOLUMN ---
+    num_cols = st.session_state.grid_columns
+    grid_cols = st.columns(num_cols)
 
     for index, item in enumerate(filtered_list):
-        col = grid_cols[index % 4]
+        col = grid_cols[index % num_cols]
 
         with col:
             if not item['is_active']:
@@ -594,13 +626,13 @@ else:
                     st.line_chart(chart_data['price'], height=130)
                     st.dataframe(
                         hist_df.rename(columns={'timestamp': 'Data', 'price': 'Cena (PLN)'}),
-                        width="stretch",
+                        use_container_width=True,
                         hide_index=True
                     )
                 else:
                     st.caption("Brak danych.")
 
-            if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", width="stretch"):
+            if st.button("🗑️ Usuń z listy", key=f"del_{item['url']}", use_container_width=True):
                 delete_offer(item['url'])
                 st.rerun()
             st.write("")
